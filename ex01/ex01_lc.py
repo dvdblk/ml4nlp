@@ -1,100 +1,123 @@
-#!/usr/bin/env python3
-#-*- coding: utf-8 -*-
-#ML for NLP 2019
-#Author: Debora Beuret
+"""
+ML4NLP - Exercise 01
 
-import numpy
-import sklearn
+Linear classifiers
+
+Authors: DBDB
+"""
+
 import json
 import numpy as np
 import pandas as pd
-
-filename1 = "tweets.json"
-filename2 = "labels-train+dev.tsv"
-
-infile1 = open(filename1, 'r')
-infile2 = open(filename2, 'r')
-
-
-"""def Sort(sub_li, n):
-    # reverse = None (Sorts in Ascending order)
-    # key is set to sort using second element of
-    # sublist lambda has been used
-    sub_li.sort(key=lambda x: x[n])
-    return sub_li"""
-
-
-mock_tweets_list = [[483885347374243841, 484023414781263872, 484026168300273664], ["اللهم أفرح قلبي وقلب من أحب وأغسل أحزاننا وهمومنا وأغفر ذنوبنا إنك على كل شيء قدير...",
-"إضغط على منطقتك يتبين لك كم يتبقى من الوقت عن الآذان..\n\nhttp://t.co/2qdr9TEG1z", "اللَّهٌمَّ صَلِّ وَسَلِّمْ عَلىٰ نَبِيِّنَآ مُحَمَّدْ وَعَلَىٰ آلِھِہ وَصَحْبِھِہ أَجْمَعِينَ\n#غرد_لي_بالخير\nhttp://t.co/fN0Vvw0SZC"]]
-
-tweets_df = pd.DataFrame(mock_tweets_list)
-tweets_df = tweets_df.transpose()
-tweets_df.columns = ["Tweet_ID", "Tweet"]
-
-# The labels
-train_labels_fp = "labels-train+dev.tsv"
-test_labels_fp = "labels-test.tsv"
-
-train_labels_df = pd.read_csv(train_labels_fp, sep='\t', names = ["Language", "Tweet_ID"])
-test_labels_df = pd.read_csv(test_labels_fp, sep='\t', names = ["Language", "Tweet_ID"])
-
-tweets_train = tweets_df.merge(train_labels_df, on='Tweet_ID', how='left')
-tweets_train = tweets_train.drop('Tweet_ID', 1)
-
-
-tweets_test = tweets_df.merge(test_labels_df, on='Tweet_ID', how='left')
-tweets_test = tweets_test.drop('Tweet_ID', 1)
-
-"""X_train = tweets_train.loc[:, "Tweet"].to_frame()
-y_train = tweets_train.loc[:, "Language"].to_frame()"""
-X_train = list(tweets_train["Tweet"])
-y_train = list(tweets_train["Language"])
-
-
-"""list_tweets = []
-list_ids1 = []
-for line in infile1:
-    j_content = json.loads(line)
-    list_ids1.append(int(j_content[0]))
-    list_tweets.append(j_content[1])
-
-
-list_lan = []
-list_ids2 = []
-for line in infile2:
-    nl = line.split()
-    list_lan.append(nl[0])
-    list_ids2.append(int(nl[1]))
-
-
-def_list = []
-
-for el in list_ids1:
-    if el in list_ids2:
-        idx1 = list_ids1.index(el)
-        idx2 = list_ids2.index(el)
-        def_list.append([list_tweets[idx1], list_lan[idx2]])
-
-print(len(list_ids1))
-print(len(list_ids2))"""
-
-
-
-
+from math import floor
 from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.linear_model import SGDClassifier
-from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import MinMaxScaler
 
-#This is our pipeline
+# Constants
+# File paths
+TWEETS_FP = "tweets.json"
+TRAIN_DEV_FP = "labels-train+dev.tsv"
+TEST_FP = "labels-test.tsv"
 
-#text_clf = Pipeline([('tfidf', TfidfVectorizer()), ('nb_clf', MultinomialNB())])   #Example from Tutoring session
+# Column names
+COL_ID = 'ID'
+COL_TWEET = 'Tweet'
+COL_LABEL = 'Label'
 
-#could add features such as the word length, average tweet length, etc
+# minimum number of instances that we require to be present in the training set
+# for a given language to be included in fitting of the model
+MIN_NR_OCCURENCES = 10
+
+# unknown class name
+CLASS_UNK = 'unknown'
 
 
+def get_tweets():
+    """Return a dataframe of tweets"""
+    tweets = []
+    with open(TWEETS_FP, 'r') as tweets_fh:  # Tweets file handle
+        for line in tweets_fh:   # put each line in a list of lines
+            j_content = json.loads(line)
+            tweets.append(j_content)
+
+    # make a dataframe out of it
+    tweets = pd.DataFrame(tweets, columns=[COL_ID, COL_TWEET])
+    return tweets
+
+def get_train_labels():
+    """Return a dataframe of train_dev labels"""
+    # deal with both label documents
+    train_dev_labels = pd.read_csv(
+        TRAIN_DEV_FP,
+        sep='\t',
+        header=None,
+        names=[COL_LABEL, COL_ID]
+    )
+    # remove whitespace from labels (e.g. "ar  " should be equal to "ar")
+    train_dev_labels.Label = train_dev_labels.Label.str.strip()
+
+    # deal with class imbalance in the train set
+    lang_occurence = train_dev_labels.groupby(COL_LABEL).size()
+    balanced_languages = lang_occurence.where(
+        lang_occurence >= MIN_NR_OCCURENCES
+    ).dropna().index.values
+    balanced_labels = train_dev_labels.Label.isin(balanced_languages)
+
+
+    # Option 1 - replace rows that are labelled with an imbalanced language
+    # ~ is element-wise logical not
+    train_dev_labels.loc[~balanced_labels, COL_LABEL] = CLASS_UNK
+
+    # Option 2 - keep the rows that are labelled with a balanced language
+    # train_dev_labels = train_dev_labels[balanced_labels]
+    return train_dev_labels
+
+def get_test_labels():
+    """Return a dataframe of test labels"""
+    return pd.read_csv(
+        TEST_FP,
+        sep='\t',
+        header=None,
+        names=[COL_LABEL, COL_ID]
+    )
+
+def create_sets(tweets, train_dev_labels, test_labels):
+    """Return a tuple of dataframes comprising three main data sets"""
+    # to allow for merge, need the same type
+    tweets[COL_ID] = tweets[COL_ID].astype(int)
+
+    # Merge by ID
+    train_dev_data = pd.merge(tweets, train_dev_labels, on=COL_ID)
+    test_data = pd.merge(tweets, test_labels, on=COL_ID)
+
+    # Util function
+    def drop_n_shuffle(data):
+        data_no_na = data.dropna().copy()
+        return data_no_na.sample(frac=1)
+
+    train_dev_data_prepared = drop_n_shuffle(
+        train_dev_data
+    ).reset_index(drop=True)
+    # take 90% of the data, reshuffle
+    train_set = train_dev_data_prepared.sample(frac=0.9, random_state=0)
+    # take 10% that remain
+    dev_set = train_dev_data_prepared.drop(train_set.index)
+    test_set = drop_n_shuffle(test_data)
+
+    # drop the ID columns, not needed anymore
+    train = train_set.drop(COL_ID, axis=1)
+    dev = dev_set.drop(COL_ID, axis=1)
+    test = test_set.drop(COL_ID, axis=1)
+
+    return train, dev, test
+
+# Average word length extractor, inspired by:
+# https://michelleful.github.io/code-blog/2015/06/20/pipelines/)
 class AverageWordLengthExtractor(BaseEstimator, TransformerMixin):
     """Takes in dataframe, extracts tweet column, outputs average word length"""
 
@@ -103,57 +126,88 @@ class AverageWordLengthExtractor(BaseEstimator, TransformerMixin):
 
     def average_word_length(self, tweet):
         """Helper code to compute average word length of a tweet"""
-        print(tweet)
-        print(type(tweet))
         return np.mean([len(word) for word in tweet.split()])
 
     def transform(self, df, y=None):
         """The workhorse of this feature extractor"""
-        return map(self.average_word_length, df)
+        # the result of the transform needs to be a 2d array a.k.a. dataframe
+        # https://stackoverflow.com/a/50713209
+        result = df.apply(self.average_word_length).to_frame()
+        return result
 
     def fit(self, df, y=None):
-        """Returns `self` unless something different happens in train and test"""
+        """Returns `self` unless something happens in train and test"""
         return self
 
 
-#Deal with the Naive Bayes first. In the pipeline, the features used are n-grams, tfidf and average word length
-## QUESTION: is featureunion needed or not?
+def train_and_predict_MNB(X_train, y_train):
+    """Return the Multinomial Naïve Bayes model trained on the parameters"""
+    multinomial_NB = Pipeline([
+        ('features', FeatureUnion([
+            # first feature
+            ('ngram_tfidf', Pipeline([
+                ('ngram', CountVectorizer(analyzer='word', ngram_range=(1, 2))),
+                ('tfidf', TfidfTransformer())
+            ])),
+            # second feature
+            ('ave_scaled', Pipeline([
+                ('ave', AverageWordLengthExtractor()),
+                ('scale', MinMaxScaler())
+            ]))
+        ])),
+        ('nb_clf', MultinomialNB(fit_prior=False, alpha=0.1)) # classifier
+    ])
+    # train
+    multinomial_NB.fit(X_train, y_train)
+    return multinomial_NB
 
-pipeline_NB = Pipeline([
-    ('feats', FeatureUnion([
-        ('tfidf', TfidfVectorizer()), # can pass in either a pipeline
-        ('ave', AverageWordLengthExtractor()), # or a transformer
-        ('ngram', CountVectorizer(ngram_range=(1, 4), analyzer='word'))
-    ])),
-    ('clf1', MultinomialNB()) # classifier
-])
+def train_and_predict_SGD(X_train, y_train):
+    """Return the Stochastic Gradient Descent model trained on the parameters"""
+    SGD = Pipeline([
+        ('feats', FeatureUnion([
+            ('ngram_tfidf', Pipeline([
+                ('ngram', CountVectorizer(ngram_range=(1, 2), analyzer='word')),
+                ('tfidf', TfidfTransformer()),
+            ])),
+            # second feature
+            ('ave_scaled', Pipeline([
+                ('ave', AverageWordLengthExtractor()),
+                ('scale', MinMaxScaler())
+            ]))
+        ])),
+        ('SGD_clf', SGDClassifier(loss='hinge', max_iter=300, penalty=None))
+    ])
 
-grid_param_NB = {'clf1__alpha': [0.2, 0.6, 0.8, 1.0],
-                 'clf1__fit_prior': [True, False]}  #'ngram__ngram_range': [(1, 1), (1, 2), (1, 4)]
+    # train
+    SGD.fit(X_train, y_train)
+    return SGD
 
-gs_NB = GridSearchCV(pipeline_NB, grid_param_NB, cv=2, n_jobs=4, verbose=1)
-gs_NB.fit(X_train, y_train)
+def preprocess():
+    """Return the three main sets used in the pipelines"""
+    tweets = get_tweets()
+    train_labels = get_train_labels()
+    test_labels = get_test_labels()
+    return create_sets(tweets, train_labels, test_labels)
 
-#Stochastic gradient descent
+def main():
+    # we don't need the dev set here
+    train, _, test = preprocess()
 
-pipeline_SGD = Pipeline([
-    ('feats', FeatureUnion([
-        ('tfidf', TfidfVectorizer()), # can pass in either a pipeline
-        ('ave', AverageWordLengthExtractor()), # or a transformer
-        ('ngram', CountVectorizer(ngram_range=(1, 4), analyzer='word'))
-    ])),
-    ('clf2', SGDClassifier())# classifier
-])
+    X_train = train.Tweet
+    y_train = train.Label
+    X_test = test.Tweet
+    y_test = test.Label
 
-grid_param_SGD = {'clf2__loss': ['hinge', 'log', 'modified huber'],
-                  'clf2__penalty': ['none', 'l1', 'l2'],
-                  'clf2__max_iter': [50, 100, 500, 1000]}
+    classifiers = {'SGD': train_and_predict_SGD,
+                   'MNB': train_and_predict_MNB}
 
-
-gs_SGD = GridSearchCV(pipeline_SGD, grid_param_SGD, cv=2, n_jobs=4, verbose=1)
-gs_SGD.fit(X_train, y_train)
-
-
+    for n, fn in classifiers.items():
+        print("Fitting " + n + " classifier.")
+        res = fn(X_train, y_train)
+        y_predicted = res.predict(X_test)
+        accuracy = accuracy_score(y_test, y_predicted) * 100
+        print(n + " accuracy: " + "%.2f" % accuracy + "%")
 
 
-
+if __name__ == "__main__":
+    main()
