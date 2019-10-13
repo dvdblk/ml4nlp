@@ -3,7 +3,7 @@ ML4NLP - Exercise 01
 
 Linear classifiers
 
-Authors: DBDB
+Authors: David Bielik, Debora Beuret
 """
 
 import json

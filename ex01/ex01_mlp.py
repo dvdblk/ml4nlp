@@ -3,7 +3,7 @@ ML4NLP - Exercise 01
 
 Multilayer Perceptron
 
-Authors: DBDB
+Authors: David Bielik, Debora Beuret
 """
 
 import json
