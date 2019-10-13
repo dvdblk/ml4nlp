@@ -39,8 +39,8 @@ CLASS_UNK = 'unknown'
 def get_tweets():
     """Return a dataframe of tweets"""
     tweets = []
-    with open(TWEETS_FP, 'r') as tweets_fh:  # Tweets file handle
-        for line in tweets_fh:   # put each line in a list of lines
+    with open(TWEETS_FP, 'r') as tweets_fh:
+        for line in tweets_fh:
             j_content = json.loads(line)
             tweets.append(j_content)
 
@@ -105,9 +105,9 @@ def create_sets(tweets, train_dev_labels, test_labels, use_dev=True):
     train_dev_data_prepared = drop_n_shuffle(
         train_dev_data
     ).reset_index(drop=True)
-    # take 90% of the data, reshuffle
+    # take frac of the data (e.g. 90%), reshuffle
     train_set = train_dev_data_prepared.sample(frac=frac, random_state=0)
-    # take 10% that remain
+    # take the remaining data
     dev_set = train_dev_data_prepared.drop(train_set.index)
     test_set = drop_n_shuffle(test_data)
 
@@ -141,7 +141,7 @@ class AverageWordLengthExtractor(BaseEstimator, TransformerMixin):
         """Returns `self` unless something happens in train and test"""
         return self
 
-def train_and_predict_MLP(X_train, y_train):
+def train_MLP(X_train, y_train):
     MLP = Pipeline([
         ('features', FeatureUnion([
             ('ngram_tfidf', Pipeline([
@@ -183,7 +183,7 @@ def main():
     y_test = test.Label
 
     print("Fitting MLP classifier.")
-    mlp = train_and_predict_MLP(X_train, y_train)
+    mlp = train_MLP(X_train, y_train)
     y_predicted = mlp.predict(X_test)
     accuracy = accuracy_score(y_test, y_predicted) * 100
     print("MLP accuracy: " + "%.2f" % accuracy + "%")
