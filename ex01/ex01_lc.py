@@ -51,7 +51,7 @@ def get_tweets():
 
 def get_train_labels():
     """Return a dataframe of train_dev labels"""
-g    train_dev_labels = pd.read_csv(
+    train_dev_labels = pd.read_csv(
         TRAIN_DEV_FP,
         sep='\t',
         header=None,
