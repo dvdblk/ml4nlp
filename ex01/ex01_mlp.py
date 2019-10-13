@@ -145,7 +145,7 @@ def train_and_predict_MLP(X_train, y_train):
     MLP = Pipeline([
         ('features', FeatureUnion([
             ('ngram_tfidf', Pipeline([
-                ('ngram', CountVectorizer(ngram_range=(1, 4), analyzer='word')),
+                ('ngram', CountVectorizer(ngram_range=(1, 2), analyzer='word')),
                 ('tfidf', TfidfTransformer())
             ])),
             ('ave_scaled', Pipeline([
