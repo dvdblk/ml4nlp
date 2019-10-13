@@ -40,8 +40,8 @@ CLASS_UNK = 'unknown'
 def get_tweets():
     """Return a dataframe of tweets"""
     tweets = []
-    with open(TWEETS_FP, 'r') as tweets_fh:  # Tweets file handle
-        for line in tweets_fh:   # put each line in a list of lines
+    with open(TWEETS_FP, 'r') as tweets_fh:
+        for line in tweets_fh:
             j_content = json.loads(line)
             tweets.append(j_content)
 
@@ -106,9 +106,9 @@ def create_sets(tweets, train_dev_labels, test_labels, use_dev=True):
     train_dev_data_prepared = drop_n_shuffle(
         train_dev_data
     ).reset_index(drop=True)
-    # take 90% of the data, reshuffle
+    # take frac of the data (e.g. 90%), reshuffle
     train_set = train_dev_data_prepared.sample(frac=frac, random_state=0)
-    # take 10% that remain
+    # take the remaining data
     dev_set = train_dev_data_prepared.drop(train_set.index)
     test_set = drop_n_shuffle(test_data)
 
@@ -143,7 +143,7 @@ class AverageWordLengthExtractor(BaseEstimator, TransformerMixin):
         return self
 
 
-def train_and_predict_MNB(X_train, y_train):
+def train_MNB(X_train, y_train):
     """Return the Multinomial Naïve Bayes model trained on the parameters"""
     multinomial_NB = Pipeline([
         ('features', FeatureUnion([
@@ -162,7 +162,7 @@ def train_and_predict_MNB(X_train, y_train):
     multinomial_NB.fit(X_train, y_train)
     return multinomial_NB
 
-def train_and_predict_SGD(X_train, y_train):
+def train_SGD(X_train, y_train):
     """Return the Stochastic Gradient Descent model trained on the parameters"""
     SGD = Pipeline([
         ('feats', FeatureUnion([
@@ -198,8 +198,8 @@ def main():
     X_test = test.Tweet
     y_test = test.Label
 
-    classifiers = {'SGD': train_and_predict_SGD,
-                   'MNB': train_and_predict_MNB}
+    classifiers = {'SGD': train_SGD,
+                   'MNB': train_MNB}
 
     for n, fn in classifiers.items():
         print("Fitting " + n + " classifier.")
