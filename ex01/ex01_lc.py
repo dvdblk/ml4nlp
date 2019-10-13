@@ -86,7 +86,7 @@ def get_test_labels():
         names=[COL_LABEL, COL_ID]
     )
 
-def create_sets(tweets, train_dev_labels, test_labels):
+def create_sets(tweets, train_dev_labels, test_labels, use_dev=True):
     """Return a tuple of dataframes comprising three main data sets"""
     # to allow for merge, need the same type
     tweets[COL_ID] = tweets[COL_ID].astype(int)
@@ -100,11 +100,15 @@ def create_sets(tweets, train_dev_labels, test_labels):
         data_no_na = data.dropna().copy()
         return data_no_na.sample(frac=1)
 
+    frac = 1
+    if use_dev:
+        frac = 0.9
+
     train_dev_data_prepared = drop_n_shuffle(
         train_dev_data
     ).reset_index(drop=True)
     # take 90% of the data, reshuffle
-    train_set = train_dev_data_prepared.sample(frac=0.9, random_state=0)
+    train_set = train_dev_data_prepared.sample(frac=frac, random_state=0)
     # take 10% that remain
     dev_set = train_dev_data_prepared.drop(train_set.index)
     test_set = drop_n_shuffle(test_data)
@@ -187,7 +191,7 @@ def preprocess():
     tweets = get_tweets()
     train_labels = get_train_labels()
     test_labels = get_test_labels()
-    return create_sets(tweets, train_labels, test_labels)
+    return create_sets(tweets, train_labels, test_labels, use_dev=False)
 
 def main():
     # we don't need the dev set here
