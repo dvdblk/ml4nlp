@@ -51,7 +51,7 @@ def get_tweets():
 
 def get_train_labels():
     """Return a dataframe of train_dev labels"""
-    train_dev_labels = pd.read_csv(
+g    train_dev_labels = pd.read_csv(
         TRAIN_DEV_FP,
         sep='\t',
         header=None,
@@ -147,12 +147,10 @@ def train_and_predict_MNB(X_train, y_train):
     """Return the Multinomial Naïve Bayes model trained on the parameters"""
     multinomial_NB = Pipeline([
         ('features', FeatureUnion([
-            # first feature
             ('ngram_tfidf', Pipeline([
                 ('ngram', CountVectorizer(analyzer='word', ngram_range=(1, 2))),
                 ('tfidf', TfidfTransformer())
             ])),
-            # second feature
             ('ave_scaled', Pipeline([
                 ('ave', AverageWordLengthExtractor()),
                 ('scale', MinMaxScaler())
@@ -172,7 +170,6 @@ def train_and_predict_SGD(X_train, y_train):
                 ('ngram', CountVectorizer(ngram_range=(1, 2), analyzer='word')),
                 ('tfidf', TfidfTransformer()),
             ])),
-            # second feature
             ('ave_scaled', Pipeline([
                 ('ave', AverageWordLengthExtractor()),
                 ('scale', MinMaxScaler())
