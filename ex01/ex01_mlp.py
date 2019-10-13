@@ -159,7 +159,7 @@ def train_and_predict_MLP(X_train, y_train):
             solver='adam',
             max_iter=50,
             momentum=0.9,
-            alpha=0.1,
+            alpha=0.01,
             verbose=True
         ))
     ])
