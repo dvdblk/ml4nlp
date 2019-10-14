@@ -5,7 +5,7 @@
 Zips the relevant files from an exercise folder. The `ex0<1-4>.zip` file is created iff:
 
 * Folder's name has the format `^(ex0)[1-4]`
-* `lab_report.pdf` is in the folder
+* `^(ex0)[1-4]_labreport\.pdf` is in the folder
 * at least one `^(ex0)[1-4]_.+(\.py)` file is in the folder
 
 ### To zip all the exercises:
