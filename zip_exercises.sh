@@ -16,7 +16,7 @@ zip_folder() {
     target_file_prefix=${d%/}
     target_py_files="$d${target_file_prefix}_"*".py"
     archive_name="${target_file_prefix}_davidbielik_deborabeuret"
-    lab_report="${d}lab_report.pdf"
+    lab_report="${d}${target_file_prefix}_labreport.pdf"
 
     # check if the lab report pdf exists
     if [ ! -f $lab_report ]; then
