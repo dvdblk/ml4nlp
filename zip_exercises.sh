@@ -8,7 +8,7 @@ print_usage() {
     echo "Zips the required files from each folder into a zip file ready for submission."
     echo " "
     echo "options:"
-    echo "-n                specify the folder number to be zipped (e.g. -n 1). Range: [1, 5]"
+    echo "-n                specify the folder number to be zipped (e.g. -n 1). Range: [1, 4]"
 }
 
 zip_folder() {
@@ -51,8 +51,8 @@ done
 # Input
 if ! [ $desired_folder_nr -eq -1 ] ; then
     # folder specified, zip specific
-    if ! [[ $desired_folder_nr =~ ^[1-5]+$ ]] ; then
-        echo "error: Not a valid number of exercise. Please choose in the range of [1, 5]." >&2; exit 1
+    if ! [[ $desired_folder_nr =~ ^[1-4]$ ]] ; then
+        echo "error: Not a valid number of exercise. Please choose in the range of [1, 4]." >&2; exit 1
     fi
     target="${folder_prefix}${desired_folder_nr}/"
     zip_folder $target; exit 0;
@@ -60,7 +60,7 @@ else
     # folder not specified, zip every folder
     for d in */ ; do
         # wait for exercise folders
-        if ! [[ $d =~ ^($folder_prefix)[1-5] ]]; then
+        if ! [[ $d =~ ^($folder_prefix)[1-4] ]]; then
             continue
         fi
 
