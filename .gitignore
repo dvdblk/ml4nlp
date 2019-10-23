@@ -1,7 +1,7 @@
 # pdfs
 *.pdf
 !ex0[1-4]_labreport.pdf
-.DS_Store
+**/.DS_Store
 
 *.zip
 
