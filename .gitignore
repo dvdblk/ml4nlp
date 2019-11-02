@@ -17,3 +17,6 @@
 # IPython
 profile_default/
 ipython_config.py
+
+
+ex02/models/*
