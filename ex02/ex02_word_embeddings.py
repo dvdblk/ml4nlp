@@ -688,6 +688,7 @@ class CBOWEvaluator:
 
     def __init__(self, args):
         self._args = args
+        self.dataset = None
 
 
     def _get_model_from_file(self, filepath):
@@ -698,7 +699,8 @@ class CBOWEvaluator:
             (CBOW, int, int, float, int): a tuple
         """
         # get the number of neurons from filename
-        str_ctx, str_embedding_dim, str_hidden, str_lr, str_epoch, *rest = filepath.split("_")
+        filename = os.path.basename(filepath)
+        str_ctx, str_embedding_dim, str_hidden, str_lr, str_epoch, *rest = filename.split("_")
         context_size = int(str_ctx)
 
         if self.dataset is None:
@@ -820,7 +822,7 @@ class CBOWEvaluator:
             print ("...[%.2f] - %s"%(item[1], item[0]))
 
 # //
-# Dear Reviewer, feel free to play around with these 3 constants...
+# Dear Reviewer, feel free to play around with these 4 constants...
 # //
 TRAIN = True
 GRID_SEARCH = True
@@ -857,23 +859,22 @@ if __name__ == "__main__":
     while word != "q":
 
         print("=" * 50)
-        print("Evaluating: " + word)
 
         if EVAL:
             if not routines:
                 # evaluate the given file
                 # eval / show closest words
                 model_fp = "models/2_50_128_0.01_200_shakespeare_model.pth"
-                print("Evaluating " + model_fp)
+                print("Evaluating " + word + " on " + model_fp)
                 evaluator.evaluate_model_from_file(model_fp, word)
             else:
-                print("Evaluating trained routines.")
+                print("Evaluating " + word + " on trained routines.")
                 # if routines is not an empty list, evaluate them
                 for routine in routines:
                     evaluator.evaluate_routine(routine, word)
 
         if EVAL_GRIDSEARCH_DIR:
-            print("Evaluating last gridsearch dir.")
+            print("Evaluating " + word + " on last gridsearch directory.")
             evaluator.evaluate_gridsearch_dir(
                 os.path.join(args.model_state_dir, args.gridsearch_dir),
                 word
