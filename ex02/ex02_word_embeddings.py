@@ -171,9 +171,8 @@ class ShakespeareDataset(Dataset):
         Returns:
             a list of tokens
         """
-
         # Regex
-        lines = lines[134:164924] #these numbers are only valid for the full corpus
+        lines = lines[134:164924]
         text = ''.join(lines)
         text = re.sub(r'\d+', '', text)
         text = re.sub('SCENE \S', '', text)
@@ -183,12 +182,12 @@ class ShakespeareDataset(Dataset):
 
         # Tokenize
         tokens = nltk.tokenize.word_tokenize(text)
-        #tokens = text.split()
 
         return tokens
 
     @staticmethod
     def _create_context_data(tokens, context_size):
+        """Create the data which will be fed into the classifier"""
         data = []
         for i in range(context_size, len(tokens) - context_size):
             # Context before w_i
@@ -245,6 +244,7 @@ class ShakespeareDataset(Dataset):
         return len(self) // batch_size
 
 class CBOW(nn.Module):
+    """Continuous Bag of Words Classifier"""
 
     def __init__(self, vocab_size, embedding_dim, context_size, nr_hidden_neurons=128):
         super(CBOW, self).__init__()
@@ -276,32 +276,72 @@ class CBOW(nn.Module):
         out = F.relu(self.linear2(out))
         return out
 
+class FSUtil:
+    """File system utilities"""
+
+    SEPARATOR = "_"
+
+    @staticmethod
+    def create_dir_if_needed(dir):
+        if not os.path.exists(dir):
+            os.makedirs(dir)
+
+    @staticmethod
+    def get_model_filename(context_size, embedding_dim, nr_hidden,
+        learning_rate, nr_epochs, generic_filename="model.pth"):
+        strings = list(map(str, [
+            context_size, embedding_dim, nr_hidden, learning_rate, nr_epochs
+        ]))
+        return FSUtil.SEPARATOR.join(
+            strings + [generic_filename]
+        )
+
+    @staticmethod
+    def create_gridsearch_subdir(models_dir, gs_dir, nr_iterations):
+        ite_str = str(nr_iterations) + "iterations" + FSUtil.SEPARATOR
+        gridsearch_dir = os.path.join(models_dir, gs_dir)
+        final_dir = os.path.join(gridsearch_dir, time.strftime("%Y%m%d-%H%M%S"))
+        FSUtil.create_dir_if_needed(final_dir)
+        return final_dir
+
+
 class TrainState:
+    """Utility methods and constants for the trainstate dictionary"""
 
     EPOCH_INDEX = "epoch_index"
     TRAIN_LOSS = "train_loss"
     VAL_LOSS = "val_loss"
-    MODEL_FP = "model_filepath"
+    MODEL_DIR = "model_directory"
 
     @staticmethod
-    def make_train_state(filepath):
+    def make_train_state(model_dir):
         """Return a new train state (dict)"""
         return {
             TrainState.EPOCH_INDEX: 0,
             TrainState.TRAIN_LOSS: [],
             TrainState.VAL_LOSS: [],
-            TrainState.MODEL_FP: filepath
+            TrainState.MODEL_DIR: model_dir
         }
 
     @staticmethod
-    def save_model(train_state, model):
+    def save_model(train_state, training_args, model):
         """Handle the training state updates.
 
         model (nn.Module): model to save
         """
+        filename = FSUtil.get_model_filename(
+            training_args.get(TrainingRoutine.CONTEXT_SIZE),
+            training_args.get(TrainingRoutine.EMBEDDING_DIM),
+            training_args.get(TrainingRoutine.NR_HIDDEN),
+            training_args.get(TrainingRoutine.LEARNING_RATE),
+            training_args.get(TrainingRoutine.NR_EPOCHS)
+        )
+        filepath = os.path.join(
+            train_state.get(TrainState.MODEL_DIR), filename
+        )
         # Save the model at least once
         if train_state.get(TrainState.EPOCH_INDEX) == 0:
-            torch.save(model.state_dict(), train_state.get(TrainState.MODEL_FP))
+            torch.save(model.state_dict(), filepath)
 
         # Save model if performance improves
         else:
@@ -312,10 +352,11 @@ class TrainState:
                 # save if needed
                 torch.save(
                     model.state_dict(),
-                    train_state.get(TrainState.MODEL_FP)
+                    filepath
                 )
 
 class TrainingRoutine:
+    """Encapsulates the training of a CBOW classifier"""
 
     EMBEDDING_DIM = "embedding_dim"
     CONTEXT_SIZE = "context_size"
@@ -324,6 +365,42 @@ class TrainingRoutine:
     DATA_FRAC = "data_frac"
     NR_EPOCHS = "nr_epochs"
     BATCH_SIZE = "batch_size"
+
+    def __init__(self, shakespeare_csv_filepath, training_args, device,
+                filedir, dataset=None):
+        self.training_args = training_args
+        embedding_dim = training_args.get(TrainingRoutine.EMBEDDING_DIM)
+        context_size = training_args.get(TrainingRoutine.CONTEXT_SIZE)
+        nr_hidden_neurons = training_args.get(TrainingRoutine.NR_HIDDEN)
+        data_frac = training_args.get(TrainingRoutine.DATA_FRAC)
+        learning_rate = training_args.get(TrainingRoutine.LEARNING_RATE)
+
+        # Create dataset if needed, othw reuse
+        if dataset is None:
+            new_dataset = ShakespeareDataset.load_and_create_dataset(
+                shakespeare_csv_filepath,
+                context_size,
+                data_frac
+            )
+            self.dataset = new_dataset
+        else:
+            self.dataset = dataset
+
+        self.device = device
+
+        # Model
+        self.loss_func = nn.CrossEntropyLoss()
+        vocab_len = len(self.dataset.get_vectorizer().vocab)
+        model = CBOW(
+            vocab_len,
+            embedding_dim,
+            context_size,
+            nr_hidden_neurons
+        )
+        self.model = model.to(device)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+
+        self.train_state = TrainState.make_train_state(filedir)
 
     @staticmethod
     def create_training_args(
@@ -339,38 +416,42 @@ class TrainingRoutine:
             TrainingRoutine.BATCH_SIZE: batch_size
         }
 
-    def __init__(self, shakespeare_csv_filepath, embedding_dim, context_size,
-                nr_hidden_neurons, data_frac, device, learning_rate,
-                filedir, filepath, dataset=None):
-        # Create dataset if needed, othw reuse
-        if dataset is None:
-            new_dataset = ShakespeareDataset.load_and_create_dataset(
-                shakespeare_csv_filepath,
-                context_size,
-                data_frac
-            )
-            self.dataset = new_dataset
-        else:
-            self.dataset = dataset
-
-        # Classifier
-        self.device = device
-        self.loss_func = nn.CrossEntropyLoss()
-        vocab_len = len(self.dataset.get_vectorizer().vocab)
-        classifier = CBOW(
-            vocab_len,
-            embedding_dim,
-            context_size,
-            nr_hidden_neurons
+    @staticmethod
+    def create_default_training_args():
+        """Create default training arguments"""
+        return TrainingRoutine.create_training_args(
+            embedding_dim=50,
+            context_size=2,
+            nr_hidden_neurons=128,
+            learning_rate=0.01,
+            data_frac=0.001,
+            nr_epochs=10,
+            batch_size=32
         )
-        self.classifier = classifier.to(device)
-        self.optimizer = optim.Adam(classifier.parameters(), lr=learning_rate)
 
-        filename = str(context_size) + "_" + str(nr_hidden_neurons) + "_" + str(learning_rate) + "_" + filepath
-        self.train_state = TrainState.make_train_state(filedir + filename)
+    @staticmethod
+    def start_training_routine(
+        args, training_args, model_state_dir, dataset=None):
+        """Create and train a training routine
+
+        Returns:
+            training_routine (TrainingRoutine): the trained routine
+        """
+        training_routine = TrainingRoutine(
+            args.shakespeare_csv_filepath,
+            training_args,
+            args.device,
+            model_state_dir,
+            dataset=dataset
+        )
+
+        training_routine.train(training_args)
+
+        return training_routine
 
 
     def _train_step(self, batch_size):
+        """Do a training iteration over the batch"""
         # Iterate over training dataset
         # setup: batch generator, set loss to 0, set train mode on
         self.dataset.set_split('train')
@@ -379,14 +460,14 @@ class TrainingRoutine:
                                           device=self.device)
         running_loss = 0.0
         # make sure our weights / embeddings get updated
-        self.classifier.train()
+        self.model.train()
 
         for batch_index, batch_dict in enumerate(batch_generator):
             # step 1. zero the gradients
             self.optimizer.zero_grad()
 
             # step 2. compute the output
-            y_pred = self.classifier(batch_dict['x_data'])
+            y_pred = self.model(batch_dict['x_data'])
 
             # step 3. compute the loss
             loss = self.loss_func(y_pred, batch_dict['y_target'])
@@ -403,6 +484,7 @@ class TrainingRoutine:
 
 
     def _val_step(self, batch_size):
+        """Do a validation iteration over the batch"""
         # Iterate over val dataset
         # setup: batch generator, set loss to 0; set eval mode on
         self.dataset.set_split('val')
@@ -410,12 +492,12 @@ class TrainingRoutine:
                                           batch_size=batch_size,
                                           device=self.device)
         running_loss = 0.0
-        self.classifier.eval()
+        self.model.eval()
 
         for batch_index, batch_dict in enumerate(batch_generator):
 
             # compute the output
-            y_pred =  self.classifier(batch_dict['x_data'])
+            y_pred =  self.model(batch_dict['x_data'])
 
             # compute the loss
             loss = self.loss_func(y_pred, batch_dict['y_target'])
@@ -424,17 +506,113 @@ class TrainingRoutine:
 
         return running_loss
 
-    def train(self, num_epochs, batch_size):
-      for epoch_index in tqdm(range(num_epochs)):
-          self.train_state[TrainState.EPOCH_INDEX] = epoch_index
+    def train(self, training_args):
+        """Do the proper training steps"""
+        nr_epochs = training_args.get(TrainingRoutine.NR_EPOCHS)
+        batch_size = training_args.get(TrainingRoutine.BATCH_SIZE)
 
-          train_loss = self._train_step(batch_size)
-          self.train_state[TrainState.TRAIN_LOSS].append(train_loss)
+        for epoch_index in tqdm(range(nr_epochs)):
+            self.train_state[TrainState.EPOCH_INDEX] = epoch_index
 
-          val_loss = self._val_step(batch_size)
-          self.train_state[TrainState.VAL_LOSS].append(val_loss)
+            train_loss = self._train_step(batch_size)
+            self.train_state[TrainState.TRAIN_LOSS].append(train_loss)
 
-          TrainState.save_model(self.train_state, self.classifier)
+            val_loss = self._val_step(batch_size)
+            self.train_state[TrainState.VAL_LOSS].append(val_loss)
+
+            TrainState.save_model(
+                self.train_state, training_args, self.model
+            )
+
+class SavedDatasets(dict):
+
+    @staticmethod
+    def dataset_key(context_size, frac):
+        """Return the key for given arguments
+
+        Args:
+            context_size (int): the size of the context in the dataset
+            frac (float): % of dataset that is used
+        """
+        return str(context_size) + "_" + str(frac)
+
+
+
+class GridSearch:
+    """A gridsearch routine that encapsulates necessary methods"""
+
+    def __init__(self):
+        self.routines = []
+        self.saved_datasets = SavedDatasets()
+
+    @staticmethod
+    def _get_param_combinations(grid_search_params):
+        """Return a list of dictionaries with each parameter combination"""
+        param_pools = [
+            [ (param, c) for c in choices ]
+            for param, choices in grid_search_params.items()
+        ]
+
+        return list(map(dict, itertools.product(*param_pools)))
+
+
+    def start(self, args, grid_search_params):
+        """Start a sequential grid GridSearch
+
+        Returns:
+            routines (list): a list of executed training routines
+        """
+
+        param_combinations = GridSearch._get_param_combinations(
+            grid_search_params
+        )
+
+        # Directory to save the classifiers into
+        classifier_dir = FSUtil.create_gridsearch_subdir(
+            args.model_state_dir,
+            args.gridsearch_dir,
+            len(param_combinations)
+        )
+
+        for param_dict in param_combinations:
+            # Create default training parameters
+            training_args = TrainingRoutine.create_default_training_args()
+
+            # Update accordingly to the current grid search param values
+            for param, value in param_dict.items():
+                training_args[param] = value
+
+            context_size = training_args.get(TrainingRoutine.CONTEXT_SIZE)
+            learning_rate = training_args.get(TrainingRoutine.LEARNING_RATE)
+            data_frac = training_args.get(TrainingRoutine.DATA_FRAC)
+
+            # try to reuse the dataset if it exists
+            maybe_dataset = self.saved_datasets.get(
+                SavedDatasets.dataset_key(context_size, data_frac)
+            )
+
+            # start the training routine
+            routine = TrainingRoutine.start_training_routine(
+                args, training_args, classifier_dir, maybe_dataset
+            )
+
+            # Save the dataset if it's a new one so we can reuse it later
+            self._save_dataset_if_needed(
+                maybe_dataset,
+                routine.dataset,
+                data_frac
+            )
+
+            # Append the trained classifier into the result
+            self.routines.append(routine)
+        return self.routines
+
+    def _save_dataset_if_needed(self, maybe_dataset, dataset, data_frac):
+        """Save the dataset if it isn't present in the saved_datasets dict"""
+        if maybe_dataset != dataset:
+            key = SavedDatasets.dataset_key(dataset, data_frac)
+            self.saved_datasets[key] = dataset
+
 
 def generate_batches(dataset, batch_size, shuffle=True,
                      drop_last=True, device="cpu"):
@@ -451,29 +629,14 @@ def generate_batches(dataset, batch_size, shuffle=True,
             out_data_dict[name] = data_dict[name].to(device)
         yield out_data_dict
 
-
-def start_training_routine(args, training_args, model_state_dir, dataset=None):
-    training_routine = TrainingRoutine(
-        args.shakespeare_csv_filepath,
-        training_args.get(TrainingRoutine.EMBEDDING_DIM),
-        training_args.get(TrainingRoutine.CONTEXT_SIZE),
-        training_args.get(TrainingRoutine.NR_HIDDEN),
-        training_args.get(TrainingRoutine.DATA_FRAC),
-        args.device,
-        training_args.get(TrainingRoutine.LEARNING_RATE),
-        model_state_dir,
-        args.model_state_file,
-        dataset=dataset
-    )
-
-    training_routine.train(
-      training_args.get(TrainingRoutine.NR_EPOCHS),
-      training_args.get(TrainingRoutine.BATCH_SIZE)
-    )
-
-    return training_routine
-
 def setup(args):
+    """Runtime/Env setup"""
+    # create the models directory for saving
+    FSUtil.create_dir_if_needed(args.model_state_dir)
+
+    # NLTK
+    nltk.download('punkt')
+
     # Check CUDA
     if not torch.cuda.is_available():
         args.cuda = False
@@ -493,56 +656,20 @@ def get_args():
         shakespeare_csv_filepath="shakespeare-corpus.txt",
         model_state_file="shakespeare_model.pth",
         model_state_dir="models/",
+        gridsearch_dir="gridsearch/",
         # Runtime options
         seed=1337,
         cuda=True
     )
 
-# Sequential grid search
-def grid_search(args, grid_search_params):
-    classifiers = []
-
-    values = [lists for _, lists in grid_search_params.items()]
-    timestr = time.strftime("%Y%m%d-%H%M%S")
-    model_gridsearch_dir = args.model_state_dir + "gridsearch/"
-    model_dir = model_gridsearch_dir + timestr + "_" \
-        + str(training_args.num_epochs) + "/"
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
-
-    def dataset_key(context_size, frac):
-        return str(context_size) + "_" + str(frac)
-
-    datasets = dict()
-
-    # Cartesian product
-    for lr, nr_hidden in itertools.product(*values):
-        # try to reuse the dataset if it exists
-        maybe_dataset = datasets.get(dataset_key(context_size, frac))
-        training_routine = start_training_routine(maybe_dataset)
-
-        dataset = training_routine.dataset
-        if maybe_dataset != dataset:
-            # Save the dataset if it's a new one
-            datasets[dataset_key(dataset)] = dataset
-
-        classifiers.append((training_routine.classifier, lr))
-
-    return classifiers
 
 def train_best_models(args):
+    """Train both classifiers with the best hyperparams"""
     # CBOW with context size = 2
-    cbow2_training_args = TrainingRoutine.create_training_args(
-        embedding_dim=50,
-        context_size=2,
-        nr_hidden_neurons=128,
-        learning_rate=0.01,
-        data_frac=0.001,
-        nr_epochs=200,
-        batch_size=32
-    )
+    cbow2_training_args = TrainingRoutine.create_default_training_args()
+    cbow5_training_args[TrainingRoutine.CONTEXT_SIZE] = 2
 
-    cbow2_training_routine = start_training_routine(
+    cbow2_training_routine = TrainingRoutine.start_training_routine(
         args, cbow2_training_args, args.model_state_dir
     )
 
@@ -550,28 +677,205 @@ def train_best_models(args):
     cbow5_training_args = cbow2_training_args.copy()
     cbow5_training_args[TrainingRoutine.CONTEXT_SIZE] = 5
 
-    cbow5_training_routine = start_training_routine(
+    cbow5_training_routine = TrainingRoutine.start_training_routine(
         args, cbow5_training_args, args.model_state_dir
     )
 
-TRAIN = True
-GRID_SEARCH = False
-BEST_MODEL_FP = ""
+    return [cbow2_training_routine,
+            cbow5_training_routine]
 
+class CBOWEvaluator:
+
+    def __init__(self, args):
+        self._args = args
+
+
+    def _get_model_from_file(self, filepath):
+        """Loads the model from a file.
+
+        Returns:
+            (model, ctx_size, nr_hidden, lr, nr_epochs) \
+            (CBOW, int, int, float, int): a tuple
+        """
+        # get the number of neurons from filename
+        str_ctx, str_embedding_dim, str_hidden, str_lr, str_epoch, *rest = filepath.split("_")
+        context_size = int(str_ctx)
+
+        if self.dataset is None:
+            print("Creating the dataset, this might take a while (1-2min)...")
+            self.dataset = ShakespeareDataset.load_and_create_dataset(
+                self._args.shakespeare_csv_filepath,
+                context_size
+            )
+
+        # init the model
+        vocab_len = len(self.dataset.get_vectorizer().vocab)
+        model = CBOW(
+            vocab_len, int(str_embedding_dim),
+            context_size, int(str_hidden)
+        )
+        # load the weights / embeddings
+        model.load_state_dict(torch.load(filepath, map_location=torch.device('cpu')))
+        # set to eval mode
+        model.eval()
+
+        return (
+            model, context_size,
+            int(str_hidden), float(str_lr), int(str_epoch)
+        )
+
+    def get_closest_word_generic(self, model, dataset, word,
+        similarity_measure, descending, topn):
+        word_distance = []
+        emb = model.embeddings
+        vocab = dataset.get_vectorizer().vocab
+
+        i = vocab.lookup_token(word)
+        lookup_tensor_i = torch.tensor([i], dtype=torch.long).to(
+            self._args.device
+        )
+        v_i = emb(lookup_tensor_i)
+        for j in range(len(vocab)):
+            if j != i:
+                lookup_tensor_j = torch.tensor([j], dtype=torch.long).to(
+                    self._args.device
+                )
+                v_j = emb(lookup_tensor_j)
+                word_distance.append(
+                    (vocab.lookup_index(j), float(similarity_measure(v_i, v_j)))
+                )
+        word_distance.sort(key=lambda x: x[1])
+        if descending:
+            return word_distance[::-1][:topn]
+        else:
+            return word_distance[:topn]
+
+    def evaluate_model(self, model, word, learning_rate,
+                        context_size, nr_epochs, topn=5, dataset=None):
+        """Pretty print the model evaluation
+
+        Args:
+            model (CBOW): the model
+            word (string): the word to evaluate
+            learning_rate (float): the learning_rate of the model
+            context_size (int): the context size
+            batch_size (int): the size of training batches
+            topn (int, optional): the number of closest words to show
+            dataset (ShakespeareDataset): the dataset to use
+        """
+        # Get variables
+        get_closest_word_pwd = self.get_closest_word_generic(
+            model, dataset, word, nn.PairwiseDistance(), False, topn
+        )
+        get_closest_word_cs = self.get_closest_word_generic(
+            model, dataset, word, nn.CosineSimilarity(), True, topn
+        )
+
+        # Print
+        print("=" * 50)
+        print("Model (Learning Rate: " + str(learning_rate) + ", Epochs: " \
+            + str(nr_epochs) + "): " + str(model) + "\n")
+        print("===Pairwise Distance (lower better)===")
+        self._pretty_print(get_closest_word_pwd)
+        print("===Cosine Similarity (higher better)===")
+        self._pretty_print(get_closest_word_cs)
+
+
+    def evaluate_model_from_file(self, filepath, word, topn=5):
+        model, context_size, _, lr, epochs = self._get_model_from_file(filepath)
+        self.evaluate_model(
+            model, word, lr, context_size, epochs, topn, self.dataset
+        )
+
+    def evaluate_routine(self, training_routine, word, topn=5):
+        self.evaluate_model(
+            training_routine.model,
+            word,
+            training_routine.training_args.get(TrainingRoutine.LEARNING_RATE),
+            training_routine.training_args.get(TrainingRoutine.CONTEXT_SIZE),
+            training_routine.training_args.get(TrainingRoutine.NR_EPOCHS),
+            topn,
+            training_routine.dataset
+        )
+
+
+    def evaluate_gridsearch_dir(self, gridsearch_dir, word, topn=5):
+        """Evaluate the last gridsearch training directory"""
+        grid_search_directories = os.listdir(gridsearch_dir)
+        grid_search_directories.sort()
+        last_grid_search_dir = grid_search_directories[-1]
+        target_dir = os.path.join(gridsearch_dir, last_grid_search_dir)
+
+        models_loaded = []
+
+        for filename in os.listdir(target_dir):
+            if filename.endswith(".pth"):
+                self.evaluate_model_from_file(filename, word, topn)
+
+    def _pretty_print(self, results):
+        """
+        Pretty print embedding results.
+        """
+        for item in results:
+            print ("...[%.2f] - %s"%(item[1], item[0]))
+
+# //
+# Dear Reviewer, feel free to play around with these 3 constants...
+# //
+TRAIN = True
+GRID_SEARCH = True
+EVAL = True
+EVAL_GRIDSEARCH_DIR = False
+
+# Entrypoint
 if __name__ == "__main__":
+    # Setup
     args = get_args()
     setup(args)
 
+    routines = []
+
     if TRAIN:
         if GRID_SEARCH:
-            #grid_search_params = {
-            #      TrainingRoutine.LEARNING_RATE: [0.001],
-            #      TrainingRoutine.NR_EPOCHS: [50, 100]
-            #}
-            #grid_search(args, grid_search_params)
-            pass
+            # Start grid search
+            grid_search_params = {
+                TrainingRoutine.LEARNING_RATE: [0.001],
+                TrainingRoutine.NR_EPOCHS: [3, 50],
+                TrainingRoutine.DATA_FRAC: [0.001]
+            }
+            grid_search = GridSearch()
+            routines = grid_search.start(args, grid_search_params)
         else:
-            train_best_models(args)
-    else:
-        # eval / show closest words for BEST_MODEL
-        pass
+            # Train the best model
+            routines = train_best_models(args)
+
+
+    evaluator = CBOWEvaluator(args)
+
+
+    word = "happiness"
+    while word != "q":
+
+        print("=" * 50)
+        print("Evaluating: " + word)
+
+        if EVAL:
+            if not routines:
+                # evaluate the given file
+                # eval / show closest words
+                model_fp = "models/2_50_128_0.01_200_shakespeare_model.pth"
+                print("Evaluating " + model_fp)
+                evaluator.evaluate_model_from_file(model_fp, word)
+            else:
+                print("Evaluating trained routines.")
+                # if routines is not an empty list, evaluate them
+                for routine in routines:
+                    evaluator.evaluate_routine(routine, word)
+
+        if EVAL_GRIDSEARCH_DIR:
+            print("Evaluating last gridsearch dir.")
+            evaluator.evaluate_gridsearch_dir(
+                os.path.join(args.model_state_dir, args.gridsearch_dir),
+                word
+            )
+        word = input("Enter word to evaluate (q to quit): ")
