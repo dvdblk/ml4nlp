@@ -822,12 +822,11 @@ class CBOWEvaluator:
             print ("...[%.2f] - %s"%(item[1], item[0]))
 
 # //
-# Dear Reviewer, feel free to play around with these 4 constants...
+# Dear Reviewer, feel free to play around with these 3 constants...
 # //
-TRAIN = True
-GRID_SEARCH = True
-EVAL = True
-EVAL_GRIDSEARCH_DIR = False
+TRAIN = False                  # if False then the training is omitted
+GRID_SEARCH = True             # determines if grid search is used for training
+EVAL_GRIDSEARCH_DIR = False    # evaluates the last gridsearch directory if True
 
 # Entrypoint
 if __name__ == "__main__":
@@ -860,18 +859,17 @@ if __name__ == "__main__":
 
         print("=" * 50)
 
-        if EVAL:
-            if not routines:
-                # evaluate the given file
-                # eval / show closest words
-                model_fp = "models/2_50_128_0.01_200_shakespeare_model.pth"
-                print("Evaluating " + word + " on " + model_fp)
-                evaluator.evaluate_model_from_file(model_fp, word)
-            else:
-                print("Evaluating " + word + " on trained routines.")
-                # if routines is not an empty list, evaluate them
-                for routine in routines:
-                    evaluator.evaluate_routine(routine, word)
+        if not routines:
+            # evaluate the given file
+            # eval / show closest words
+            model_fp = "models/2_50_128_0.01_200_shakespeare_model.pth"
+            print("Evaluating " + word + " on " + model_fp)
+            evaluator.evaluate_model_from_file(model_fp, word)
+        else:
+            print("Evaluating " + word + " on trained routines.")
+            # if routines is not an empty list, evaluate them
+            for routine in routines:
+                evaluator.evaluate_routine(routine, word)
 
         if EVAL_GRIDSEARCH_DIR:
             print("Evaluating " + word + " on last gridsearch directory.")
@@ -879,4 +877,5 @@ if __name__ == "__main__":
                 os.path.join(args.model_state_dir, args.gridsearch_dir),
                 word
             )
+        print("=" * 50)
         word = input("Enter word to evaluate (q to quit): ")
