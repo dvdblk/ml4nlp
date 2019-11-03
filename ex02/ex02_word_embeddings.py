@@ -863,7 +863,7 @@ if __name__ == "__main__":
             # evaluate the given file
             # eval / show closest words
             model_fp = "models/2_50_128_0.01_200_shakespeare_model.pth"
-            print("Evaluating " + word + " on " + model_fp)
+            print("Evaluating word '" + word + "' on " + model_fp)
             evaluator.evaluate_model_from_file(model_fp, word)
         else:
             print("Evaluating " + word + " on trained routines.")
