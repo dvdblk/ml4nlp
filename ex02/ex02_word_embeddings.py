@@ -9,10 +9,14 @@ import torch.nn.functional as F
 import torch.optim as optim
 import nltk
 import itertools
-import time, os
+import time
+import os
 from torch.utils.data import Dataset, DataLoader
 from tqdm.auto import tqdm
 from argparse import Namespace
+import json
+import datetime
+import subprocess
 
 
 class Vocabulary:
@@ -20,15 +24,15 @@ class Vocabulary:
         self._token_to_ids = {}
         self._ids_to_token = {}
 
+        # Add the unknown token and index
         if add_unk:
             self.unk_index = self.add_token("<UNK>")
         else:
             self.unk_index = -1
 
-
     def vocabulary_set(self):
         """this function returns a list of unique tokens"""
-        return(list(set(self.tokens)))
+        return self._ids_to_token.values()
 
     def add_token(self, token):
         """Update mapping dicts based on the token.
@@ -132,7 +136,7 @@ class ShakespeareDataset(Dataset):
         Args:
             filepath (str): location of the dataset
             context_size (int): size of the context before/after the target word
-            frac (float, optional): fraction of the data to use (default 1.0)
+            frac (float, optional): fraction of the data to use (default 1.0 / 100%)
         Returns:
             an instance of ShakespeareDataset
         """
@@ -159,7 +163,6 @@ class ShakespeareDataset(Dataset):
         """Load the dataset file into lines"""
         with open(filepath) as file:
             lines = file.readlines()
-            file.close()
             return lines
 
     @staticmethod
@@ -355,6 +358,7 @@ class TrainState:
                     filepath
                 )
 
+
 class TrainingRoutine:
     """Encapsulates the training of a CBOW classifier"""
 
@@ -437,6 +441,9 @@ class TrainingRoutine:
         Returns:
             training_routine (TrainingRoutine): the trained routine
         """
+        start = time.time()
+
+        # Create the routine
         training_routine = TrainingRoutine(
             args.shakespeare_csv_filepath,
             training_args,
@@ -445,8 +452,25 @@ class TrainingRoutine:
             dataset=dataset
         )
 
+        # Start the training
+        print(" Training ".center(80, "="))
+        def print_time(str):
+            print("[{0:%Y-%m-%d %H:%M:%S}] {1}".format(
+                datetime.datetime.now(), str
+            ))
+
+        print_time("CBOW model with: {}".format(
+            json.dumps(training_args, indent=4))
+        )
+
         training_routine.train(training_args)
 
+        end = time.time()
+        print()
+        print_time("Training finished in {0:.{1}f} seconds.\n".format(
+            end - start, 4
+        ))
+        # Return the routine
         return training_routine
 
 
@@ -526,6 +550,19 @@ class TrainingRoutine:
 
 class SavedDatasets(dict):
 
+    def get_dataset(self, context_size, frac):
+        """Return the dataset for given arguments
+
+        Args:
+            context_size (int): the size of the context in the dataset
+            frac (float): % of dataset that is used
+
+        Returns:
+            dataset (ShakespeareDataset)
+        """
+        return self.get(SavedDatasets.dataset_key(context_size, frac), None)
+
+
     @staticmethod
     def dataset_key(context_size, frac):
         """Return the key for given arguments
@@ -533,6 +570,9 @@ class SavedDatasets(dict):
         Args:
             context_size (int): the size of the context in the dataset
             frac (float): % of dataset that is used
+
+        Returns:
+            key (string)
         """
         return str(context_size) + "_" + str(frac)
 
@@ -587,8 +627,8 @@ class GridSearch:
             data_frac = training_args.get(TrainingRoutine.DATA_FRAC)
 
             # try to reuse the dataset if it exists
-            maybe_dataset = self.saved_datasets.get(
-                SavedDatasets.dataset_key(context_size, data_frac)
+            maybe_dataset = self.saved_datasets.get_dataset(
+                context_size, data_frac
             )
 
             # start the training routine
@@ -629,6 +669,148 @@ def generate_batches(dataset, batch_size, shuffle=True,
             out_data_dict[name] = data_dict[name].to(device)
         yield out_data_dict
 
+class CBOWEvaluator:
+
+    def __init__(self, args):
+        self._args = args
+        self.dataset = None
+
+
+    def _get_model_from_file(self, filepath):
+        """Loads the model from a file.
+
+        Returns:
+            (model, ctx_size, nr_hidden, lr, nr_epochs) \
+            (CBOW, int, int, float, int): a tuple
+        """
+        # get the number of neurons from filename
+        filename = os.path.basename(filepath)
+        str_ctx, str_embedding_dim, str_hidden, str_lr, str_epoch, *rest = filename.split("_")
+        context_size = int(str_ctx)
+
+        if self.dataset is None:
+            print("Creating the full dataset. This might take a while (1-5min)...")
+            self.dataset = ShakespeareDataset.load_and_create_dataset(
+                self._args.shakespeare_csv_filepath,
+                context_size
+            )
+
+        # init the model
+        vocab_len = len(self.dataset.get_vectorizer().vocab)
+        model = CBOW(
+            vocab_len, int(str_embedding_dim),
+            context_size, int(str_hidden)
+        )
+        # load the weights / embeddings
+        model.load_state_dict(torch.load(filepath, map_location=torch.device('cpu')))
+        # set to eval mode
+        model.eval()
+
+        return (
+            model, context_size,
+            int(str_hidden), float(str_lr), int(str_epoch)
+        )
+
+    def get_closest_word_generic(self, model, dataset, word,
+        similarity_measure, descending, topn):
+        """Taken from the project"""
+        word_distance = []
+        emb = model.embeddings
+        vocab = dataset.get_vectorizer().vocab
+
+        i = vocab.lookup_token(word)
+        lookup_tensor_i = torch.tensor([i], dtype=torch.long).to(
+            self._args.device
+        )
+        v_i = emb(lookup_tensor_i)
+        for j in range(len(vocab)):
+            if j != i:
+                lookup_tensor_j = torch.tensor([j], dtype=torch.long).to(
+                    self._args.device
+                )
+                v_j = emb(lookup_tensor_j)
+                word_distance.append(
+                    (vocab.lookup_index(j), float(similarity_measure(v_i, v_j)))
+                )
+        word_distance.sort(key=lambda x: x[1])
+        return word_distance[::-1][:topn] if descending else word_distance[:topn]
+
+    def evaluate_model(self, model, word, learning_rate,
+                        context_size, nr_epochs, dataset, topn=5):
+        """Pretty print the model evaluation
+
+        Args:
+            model (CBOW): the model
+            word (string): the word to evaluate
+            learning_rate (float): the learning_rate of the model
+            context_size (int): the context size
+            batch_size (int): the size of training batches
+            topn (int, optional): the number of closest words to show
+            dataset (ShakespeareDataset): the dataset to use
+        """
+        # Check if the word is in the vocab
+        if word not in dataset.get_vectorizer().vocab.vocabulary_set():
+            print("==='" + word + "' is not in the vocabulary.===")
+            return
+
+        # Get variables
+        get_closest_word_pwd = self.get_closest_word_generic(
+            model, dataset, word, nn.PairwiseDistance(), False, topn
+        )
+        get_closest_word_cs = self.get_closest_word_generic(
+            model, dataset, word, nn.CosineSimilarity(), True, topn
+        )
+
+        # Print
+
+        print("Model (Context: " + str(context_size) \
+            + ", LR: " + str(learning_rate) + ", Epochs: " \
+            + str(nr_epochs) + "): \n" + str(model) + "\n")
+        print("===Pairwise Distance (lower better)===")
+        self._pretty_print(get_closest_word_pwd)
+        print("===Cosine Similarity (higher better)===")
+        self._pretty_print(get_closest_word_cs)
+        print("=" * 60)
+
+
+    def evaluate_model_from_file(self, filepath, word, topn=5):
+        model, context_size, _, lr, epochs = self._get_model_from_file(filepath)
+        self.evaluate_model(
+            model, word, lr, context_size, epochs, self.dataset, topn
+        )
+
+    def evaluate_routine(self, training_routine, word, topn=5):
+        self.evaluate_model(
+            training_routine.model,
+            word,
+            training_routine.training_args.get(TrainingRoutine.LEARNING_RATE),
+            training_routine.training_args.get(TrainingRoutine.CONTEXT_SIZE),
+            training_routine.training_args.get(TrainingRoutine.NR_EPOCHS),
+            training_routine.dataset,
+            topn
+        )
+
+
+    def evaluate_gridsearch_dir(self, gridsearch_dir, word, topn=5):
+        """Evaluate the last gridsearch training directory"""
+        grid_search_directories = os.listdir(gridsearch_dir)
+        grid_search_directories.sort()
+        last_grid_search_dir = grid_search_directories[-1]
+        target_dir = os.path.join(gridsearch_dir, last_grid_search_dir)
+
+        models_loaded = []
+
+        for filename in os.listdir(target_dir):
+            if filename.endswith(".pth"):
+                self.evaluate_model_from_file(filename, word, topn)
+
+    def _pretty_print(self, results):
+        """
+        Pretty print embedding results.
+        """
+        for item in results:
+            print ("...[%.2f] - %s"%(item[1], item[0]))
+
 def setup(args):
     """Runtime/Env setup"""
     # create the models directory for saving
@@ -642,7 +824,7 @@ def setup(args):
         args.cuda = False
 
     args.device = torch.device("cuda" if args.cuda else "cpu")
-    print("Using CUDA: {}".format(args.cuda))
+    print("\nUsing CUDA (GPU): {}\n".format(args.cuda))
 
     # Set seed for reproducibility
     np.random.seed(args.seed)
@@ -684,147 +866,44 @@ def train_best_models(args):
     return [cbow2_training_routine,
             cbow5_training_routine]
 
-class CBOWEvaluator:
+def eval_loop(args, routines=None):
+    """Evaluate the input words on different classifiers"""
+    evaluator = CBOWEvaluator(args)
 
-    def __init__(self, args):
-        self._args = args
-        self.dataset = None
-
-
-    def _get_model_from_file(self, filepath):
-        """Loads the model from a file.
-
-        Returns:
-            (model, ctx_size, nr_hidden, lr, nr_epochs) \
-            (CBOW, int, int, float, int): a tuple
-        """
-        # get the number of neurons from filename
-        filename = os.path.basename(filepath)
-        str_ctx, str_embedding_dim, str_hidden, str_lr, str_epoch, *rest = filename.split("_")
-        context_size = int(str_ctx)
-
-        if self.dataset is None:
-            print("Creating the dataset, this might take a while (1-2min)...")
-            self.dataset = ShakespeareDataset.load_and_create_dataset(
-                self._args.shakespeare_csv_filepath,
-                context_size
-            )
-
-        # init the model
-        vocab_len = len(self.dataset.get_vectorizer().vocab)
-        model = CBOW(
-            vocab_len, int(str_embedding_dim),
-            context_size, int(str_hidden)
-        )
-        # load the weights / embeddings
-        model.load_state_dict(torch.load(filepath, map_location=torch.device('cpu')))
-        # set to eval mode
-        model.eval()
-
-        return (
-            model, context_size,
-            int(str_hidden), float(str_lr), int(str_epoch)
-        )
-
-    def get_closest_word_generic(self, model, dataset, word,
-        similarity_measure, descending, topn):
-        word_distance = []
-        emb = model.embeddings
-        vocab = dataset.get_vectorizer().vocab
-
-        i = vocab.lookup_token(word)
-        lookup_tensor_i = torch.tensor([i], dtype=torch.long).to(
-            self._args.device
-        )
-        v_i = emb(lookup_tensor_i)
-        for j in range(len(vocab)):
-            if j != i:
-                lookup_tensor_j = torch.tensor([j], dtype=torch.long).to(
-                    self._args.device
-                )
-                v_j = emb(lookup_tensor_j)
-                word_distance.append(
-                    (vocab.lookup_index(j), float(similarity_measure(v_i, v_j)))
-                )
-        word_distance.sort(key=lambda x: x[1])
-        if descending:
-            return word_distance[::-1][:topn]
+    word = "with"
+    top_n = 5
+    print()
+    while word != "q":
+        print(" Evaluating '{}' on: ".format(word).center(80, "="))
+        if not routines:
+            models_fp = ["models/2_50_128_0.01_200_shakespeare_model.pth"]
+            for model_fp in models_fp:
+                evaluator.evaluate_model_from_file(model_fp, word, top_n)
         else:
-            return word_distance[:topn]
+            # if routines is not an empty list, evaluate them
+            for routine in routines:
+                evaluator.evaluate_routine(routine, word, top_n)
 
-    def evaluate_model(self, model, word, learning_rate,
-                        context_size, nr_epochs, topn=5, dataset=None):
-        """Pretty print the model evaluation
-
-        Args:
-            model (CBOW): the model
-            word (string): the word to evaluate
-            learning_rate (float): the learning_rate of the model
-            context_size (int): the context size
-            batch_size (int): the size of training batches
-            topn (int, optional): the number of closest words to show
-            dataset (ShakespeareDataset): the dataset to use
-        """
-        # Get variables
-        get_closest_word_pwd = self.get_closest_word_generic(
-            model, dataset, word, nn.PairwiseDistance(), False, topn
-        )
-        get_closest_word_cs = self.get_closest_word_generic(
-            model, dataset, word, nn.CosineSimilarity(), True, topn
-        )
-
-        # Print
-        print("=" * 50)
-        print("Model (Learning Rate: " + str(learning_rate) + ", Epochs: " \
-            + str(nr_epochs) + "): " + str(model) + "\n")
-        print("===Pairwise Distance (lower better)===")
-        self._pretty_print(get_closest_word_pwd)
-        print("===Cosine Similarity (higher better)===")
-        self._pretty_print(get_closest_word_cs)
+        if EVAL_GRIDSEARCH_DIR:
+            evaluator.evaluate_gridsearch_dir(
+                os.path.join(args.model_state_dir, args.gridsearch_dir),
+                word,
+                top_n
+            )
+        print("\n")
+        word = input("Enter word to evaluate (q to quit): ")
 
 
-    def evaluate_model_from_file(self, filepath, word, topn=5):
-        model, context_size, _, lr, epochs = self._get_model_from_file(filepath)
-        self.evaluate_model(
-            model, word, lr, context_size, epochs, topn, self.dataset
-        )
-
-    def evaluate_routine(self, training_routine, word, topn=5):
-        self.evaluate_model(
-            training_routine.model,
-            word,
-            training_routine.training_args.get(TrainingRoutine.LEARNING_RATE),
-            training_routine.training_args.get(TrainingRoutine.CONTEXT_SIZE),
-            training_routine.training_args.get(TrainingRoutine.NR_EPOCHS),
-            topn,
-            training_routine.dataset
-        )
-
-
-    def evaluate_gridsearch_dir(self, gridsearch_dir, word, topn=5):
-        """Evaluate the last gridsearch training directory"""
-        grid_search_directories = os.listdir(gridsearch_dir)
-        grid_search_directories.sort()
-        last_grid_search_dir = grid_search_directories[-1]
-        target_dir = os.path.join(gridsearch_dir, last_grid_search_dir)
-
-        models_loaded = []
-
-        for filename in os.listdir(target_dir):
-            if filename.endswith(".pth"):
-                self.evaluate_model_from_file(filename, word, topn)
-
-    def _pretty_print(self, results):
-        """
-        Pretty print embedding results.
-        """
-        for item in results:
-            print ("...[%.2f] - %s"%(item[1], item[0]))
-
-# //
-# Dear Reviewer, feel free to play around with these 3 constants...
-# //
-TRAIN = False                  # if False then the training is omitted
+# ===================================================================
+#
+# Dear Reviewer/s, feel free to play around with these 3 constants...
+#
+# Disclaimer: no edge cases were/are tested with the training inputs.
+#             Thus, be careful or expect things to break when changing
+#             them :) have fun!
+#
+# ===================================================================
+TRAIN = True                   # if False then the training is omitted
 GRID_SEARCH = True             # determines if grid search is used for training
 EVAL_GRIDSEARCH_DIR = False    # evaluates the last gridsearch directory if True
 
@@ -838,44 +917,18 @@ if __name__ == "__main__":
 
     if TRAIN:
         if GRID_SEARCH:
-            # Start grid search
+            # add any of the TrainingRoutine.<CONSTANT> params in here!
             grid_search_params = {
                 TrainingRoutine.LEARNING_RATE: [0.001],
-                TrainingRoutine.NR_EPOCHS: [3, 50],
-                TrainingRoutine.DATA_FRAC: [0.001]
+                TrainingRoutine.NR_EPOCHS: [30],
+                TrainingRoutine.DATA_FRAC: [0.001],
+                TrainingRoutine.CONTEXT_SIZE: [2, 5]
             }
+            # Start the grid search..
             grid_search = GridSearch()
             routines = grid_search.start(args, grid_search_params)
         else:
             # Train the best model
             routines = train_best_models(args)
 
-
-    evaluator = CBOWEvaluator(args)
-
-
-    word = "happiness"
-    while word != "q":
-
-        print("=" * 50)
-
-        if not routines:
-            # evaluate the given file
-            # eval / show closest words
-            model_fp = "models/2_50_128_0.01_200_shakespeare_model.pth"
-            print("Evaluating word '" + word + "' on " + model_fp)
-            evaluator.evaluate_model_from_file(model_fp, word)
-        else:
-            print("Evaluating " + word + " on trained routines.")
-            # if routines is not an empty list, evaluate them
-            for routine in routines:
-                evaluator.evaluate_routine(routine, word)
-
-        if EVAL_GRIDSEARCH_DIR:
-            print("Evaluating " + word + " on last gridsearch directory.")
-            evaluator.evaluate_gridsearch_dir(
-                os.path.join(args.model_state_dir, args.gridsearch_dir),
-                word
-            )
-        print("=" * 50)
-        word = input("Enter word to evaluate (q to quit): ")
+    eval_loop(args, routines)
