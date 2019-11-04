@@ -928,7 +928,8 @@ if __name__ == "__main__":
             grid_search = GridSearch()
             routines = grid_search.start(args, grid_search_params)
         else:
-            # Train the best model
+            # Or train the best model
             routines = train_best_models(args)
 
+    # Run the evaluation loop (asks for user input)
     eval_loop(args, routines)
