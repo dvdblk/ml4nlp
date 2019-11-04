@@ -16,7 +16,6 @@ from tqdm.auto import tqdm
 from argparse import Namespace
 import json
 import datetime
-import subprocess
 
 
 class Vocabulary:
