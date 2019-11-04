@@ -427,9 +427,9 @@ class TrainingRoutine:
             embedding_dim=50,
             context_size=2,
             nr_hidden_neurons=128,
-            learning_rate=0.01,
-            data_frac=0.001,
-            nr_epochs=10,
+            learning_rate=0.001,
+            data_frac=1,
+            nr_epochs=200,
             batch_size=32
         )
 
@@ -876,7 +876,8 @@ def eval_loop(args, routines=None):
     while word != "q":
         print(" Evaluating '{}' on: ".format(word).center(80, "="))
         if not routines:
-            models_fp = ["models/2_50_128_0.01_200_shakespeare_model.pth"]
+            models_fp = ["models/2_50_128_0.01_200_shakespeare_model.pth",
+                        "models/5_50_128_0.001_200_shakespeare_model.pth"]
             for model_fp in models_fp:
                 evaluator.evaluate_model_from_file(model_fp, word, top_n)
         else:
@@ -903,7 +904,7 @@ def eval_loop(args, routines=None):
 #             them :) have fun!
 #
 # ===================================================================
-TRAIN = True                   # if False then the training is omitted
+TRAIN = False                   # if False then the training is omitted
 GRID_SEARCH = True             # determines if grid search is used for training
 EVAL_GRIDSEARCH_DIR = False    # evaluates the last gridsearch directory if True
 
