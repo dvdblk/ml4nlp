@@ -16,6 +16,7 @@ import os
 import nltk
 import time
 import datetime
+import html
 
 # constants
 # Column names
@@ -197,6 +198,10 @@ class TweetsDataset(Dataset):
         self.dev_df = dataframes[1]
         self.test_df = dataframes[2]
 
+        for i, row in self.train_df.iterrows():
+            if len(row[COL_TWEET]) > 256:
+                print(row)
+
         self._lookup_dict = {'train' : self.train_df,
                              'val': self.dev_df,
                              'test': self.test_df}
@@ -227,7 +232,7 @@ class TweetsDataset(Dataset):
         """Return a tuple of dataframes comprising three main data sets"""
 
         # to allow for merge, need the same type
-        tweets[COL_ID] = tweets[COL_ID].astype(int)
+        tweets[COL_ID] = tweets[COL_ID].astype(np.int64)
 
         # Merge by ID
         train_dev_data = pd.merge(tweets, train_dev_labels, on=COL_ID)
@@ -301,13 +306,14 @@ class TweetsDataset(Dataset):
             u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
                                "]+", flags=re.UNICODE)
 
-        with open(filepath, 'r') as tweets_fh:  # Tweets file handle
+        with open(filepath, 'r', encoding="utf-8") as tweets_fh:  # Tweets file handle
             for line in tweets_fh:   # put each line in a list of lines
                 j_content = json.loads(line)
                 #preprocessing steps first!
                 text = j_content[1]
                 text = re.sub('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
                 text = re.sub('@\S*', '', text)
+                text = html.unescape(text)
                 if text:
                     # if the tweet text is not empty
                     j_content[1] = text
@@ -347,8 +353,8 @@ class TweetsDataset(Dataset):
         return {TweetsDataset.INPUT_X: one_hotted_tweet,
                 TweetsDataset.TARGET_Y: tweet_lang_target_index}
 
-    def generate_batches(self, batch_size, shuffle=True,
-                         drop_last=True, device="cpu"):
+    def generate_batches(self, batch_size, device, shuffle=True,
+                         drop_last=True):
         """
         A generator function which wraps the PyTorch DataLoader. It will
           ensure each tensor is on the write device location.
@@ -520,8 +526,8 @@ class TrainingRoutine:
         # Iterate over training dataset
         # setup: batch generator, set loss to 0, set train mode on
         self.dataset.set_split('train')
-        batch_generator = self.dataset.generate_batches(batch_size=batch_size,
-                                          device=self.device)
+        batch_generator = self.dataset.generate_batches(device=self.device,
+                                                    batch_size=batch_size)
         running_loss = 0.0
         # make sure our weights / embeddings get updated
         self.model.train()
