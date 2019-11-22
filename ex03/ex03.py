@@ -570,7 +570,7 @@ class TrainingRoutine:
                 args.model_state_dir, filename
             )
             # Save the model
-            torch.save(model.state_dict(), filepath)
+            torch.save(self.model.state_dict(), filepath)
 
 
 
