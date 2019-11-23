@@ -670,7 +670,7 @@ def main():
             nr_hidden_neurons=128,
             learning_rate=0.01,
             data_frac=1,
-            nr_epochs=2,
+            nr_epochs=20,
             batch_size=32
         )
         model_training_routine = TrainingRoutine.start_training_routine(
