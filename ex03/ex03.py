@@ -263,6 +263,10 @@ class TweetsDataset(Dataset):
         # remove whitespace from labels (e.g. "ar  " should be equal to "ar")
         train_dev_labels.Label = train_dev_labels.Label.str.strip()
 
+        # remove 'und' languages
+        und_indices = train_dev_labels.index[train_dev_labels.Label == 'und']
+        train_dev_labels.drop(und_indices, inplace=True)
+
         # deal with class imbalance in the train set
         lang_occurence = train_dev_labels.groupby(COL_LABEL).size()
         balanced_languages = lang_occurence.where(
@@ -272,10 +276,10 @@ class TweetsDataset(Dataset):
 
         # Option 1 - replace rows that are labelled with an imbalanced language
         # ~ is element-wise logical not
-        train_dev_labels.loc[~balanced_labels, COL_LABEL] = CLASS_UNK
+        #train_dev_labels.loc[~balanced_labels, COL_LABEL] = CLASS_UNK
 
         # Option 2 - keep the rows that are labelled with a balanced language
-        # train_dev_labels = train_dev_labels[balanced_labels]
+        train_dev_labels = train_dev_labels[balanced_labels]
         return train_dev_labels
 
     @staticmethod
