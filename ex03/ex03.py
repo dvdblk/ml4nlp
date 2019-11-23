@@ -426,7 +426,7 @@ class TrainingRoutine:
         self.dataset = TweetsDataset.load_and_create_dataset(
             args.tweets_fp,
             args.train_dev_fp,
-            args.test_fp
+            args.test_fp,
             data_frac
         )
 
@@ -573,25 +573,60 @@ class Evaluator:
     def evaluate_model(self, model, dataset, split, device):
         print(" Evaluating ".center(80, "="))
         dataset.set_split(split)
+        batch_size = 512
         batch_generator = dataset.generate_batches(device=device,
-                                                    batch_size=512)
+                                                    batch_size=batch_size)
 
         model.eval()
-
+        batch_bar = tqdm(desc='Test batch',
+                          total=len(dataset) // batch_size,
+                          position=0)
         accuracy = 0
 
-        for batch_index, (batch_X, batch_y) in tqdm(enumerate(batch_generator)):
-            y_pred =  model(x_in=batch_X)
+        for batch_index, (batch_X, batch_y) in enumerate(batch_generator):
+            y_pred =  model(x=batch_X)
             acc_t = Evaluator.compute_accuracy(y_pred, batch_y)
             accuracy += (acc_t - accuracy) / (batch_index + 1)
+            batch_bar.update()
 
         print("Accuracy: {}".format(accuracy))
 
 
+    def evaluate_model_from_file(self, filepath, dataset, split, device):
+        model, dataset = self._get_model_from_file(filepath)
+        self.evaluate_model(
+            model, dataset, split, device
+        )
+
+    def _get_model_from_file(self, filepath, args):
+        """Loads the model from a file. Returns the model and the dataset"""
+        filename = os.path.basename(filepath)
+        str_hidden, *rest = filename.split("_")
+
+        print("Creating the full dataset. This might take a while...")
+        dataset = TweetsDataset.load_and_create_dataset(
+            args.tweets_fp,
+            args.train_dev_fp,
+            args.test_fp
+        )
+        vectorizer = dataset.get_vectorizer()
+        vocab_len = len(vectorizer.token_vocab)
+        nr_languages = len(vectorizer.label_vocab)
+        model = TweetClassifier(
+            MAX_TWEET_LENGTH,
+            vocab_len,
+            int(str_hidden),
+            nr_languages
+        )
+        # load the weights
+        model.load_state_dict(torch.load(filepath, map_location=torch.device(args.device)))
+        model = model.to(args.device)
+
+        return model, dataset
+
     @staticmethod
     def compute_accuracy(y_pred, y_target):
         _, y_pred_indices = y_pred.max(dim=1)
-        print(y_pred)
         n_correct = torch.eq(y_pred_indices, y_target).sum().item()
         return n_correct / len(y_pred_indices) * 100
 
@@ -632,20 +667,26 @@ def main():
     args = get_args()
     setup(args)
 
-    # Train
-    model_training_args = TrainingRoutine.create_default_training_args()
-    model_training_routine = TrainingRoutine.start_training_routine(
-        args, model_training_args
-    )
-
-    # Eval
+    training = True
     evaluator = Evaluator()
-    use_dev_set_for_eval = model_training_routine.dataset.dev_df.size > 0
-    eval_set = 'dev' if use_dev_set_for_eval else 'test'
+    if training:
+        # Train
+        model_training_args = TrainingRoutine.create_default_training_args()
+        model_training_routine = TrainingRoutine.start_training_routine(
+            args, model_training_args
+        )
+        model = model_training_routine.model
+        dataset = model_training_routine.dataset
+        use_dev_set_for_eval = model_training_routine.dataset.dev_df.size > 0
+        eval_set = "dev" if use_dev_set_for_eval else "test"
+    else:
+        filename = "128_tweet_cnn_model.pth"
+        model, dataset = evaluator._get_model_from_file(filename, args)
+        eval_set = "test"
 
     evaluator.evaluate_model(
-        model_training_routine.model,
-        model_training_routine.dataset,
+        model,
+        dataset,
         eval_set,
         args.device
     )
