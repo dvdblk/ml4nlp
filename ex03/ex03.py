@@ -359,32 +359,35 @@ class TweetClassifier(nn.Module):
     def __init__(self, input_length, one_hot_length, nr_hidden, nr_languages):
         super(TweetClassifier, self).__init__()
         kernel_length = 2
+        nr_filters = 32
         kernel_size = (kernel_length, one_hot_length) # bi-grams
         # Convolution
         self.conv1 = torch.nn.Conv1d(
             one_hot_length,
-            64,                 # nr of filters
+            nr_filters,
             kernel_length
         )
         # Pooling
-        self.pool = torch.nn.MaxPool1d(8)
+        self.pool = torch.nn.MaxPool1d(input_length-1)
         # Fully Connected layers
         # FIXME: fc1 input
-        self.fc1 = torch.nn.Linear(1984, nr_hidden)
-        self.fc2 = torch.nn.Linear(nr_hidden, nr_languages)
+        self.fc1 = torch.nn.Linear(nr_filters, nr_languages)
+        #self.fc2 = torch.nn.Linear(nr_hidden, nr_languages)
 
     def forward(self, x):
-        #print(x.shape)
+        #print("x (shape: {}): {}".format(x.shape, x))
         out = x.permute(0, 2, 1)
-        #print(out.shape)
+        #print("x permuted (shape: {}): {}".format(out.shape, out))
         out = self.conv1(out)
-        #print(out.shape)
+        #print("conv1 (shape: {}): {}".format(out.shape, out))
         out = self.pool(out)
-        #print(out.shape)
+        #print("pool (shape: {}): {}".format(out.shape, out))
         out = torch.flatten(out, 1, 2)
-        #print(out.shape)
+        #print("pool flattened (shape: {}): {}".format(out.shape, out))
         out = F.relu(self.fc1(out))
-        out = F.relu(self.fc2(out))
+        #print("fc1 (shape: {}): {}".format(out.shape, out))
+        #out = F.relu(self.fc2(out))
+        #print("fc2/output (shape: {}): {}".format(out.shape, out))
         return out
 
 
@@ -458,17 +461,6 @@ class TrainingRoutine:
         }
 
     @staticmethod
-    def create_default_training_args():
-        """Create default training arguments"""
-        return TrainingRoutine.create_training_args(
-            nr_hidden_neurons=128,
-            learning_rate=0.001,
-            data_frac=1,
-            nr_epochs=20,
-            batch_size=32
-        )
-
-    @staticmethod
     def start_training_routine(args, training_args):
         """Create and train a training routine
 
@@ -509,8 +501,7 @@ class TrainingRoutine:
         training_bar = tqdm(desc='Batches',
                           total=len(self.dataset) // batch_size,
                           position=1,
-                          leave=False,
-                          ascii=True)
+                          leave=False)
         # setup: batch generator, set loss to 0, set train mode on
         self.dataset.set_split('train')
         batch_generator = self.dataset.generate_batches(device=self.device,
@@ -658,7 +649,7 @@ def get_args():
         tweets_fp=to_dir("tweets.json"),
         train_dev_fp=to_dir("labels-train+dev.tsv"),
         test_fp=to_dir("labels-test.tsv"),
-        model_state_file=to_dir("tweet_cnn_model.pth"),
+        model_state_file="tweet_cnn_model.pth",
         model_state_dir=to_dir("trained_models/"),
         # Runtime Args
         seed=1337,
@@ -674,14 +665,20 @@ def main():
     evaluator = Evaluator()
     if training:
         # Train
-        model_training_args = TrainingRoutine.create_default_training_args()
+        model_training_args = TrainingRoutine.create_training_args(
+            nr_hidden_neurons=128,
+            learning_rate=0.001,
+            data_frac=0.01,
+            nr_epochs=2,
+            batch_size=32
+        )
         model_training_routine = TrainingRoutine.start_training_routine(
             args, model_training_args
         )
         model = model_training_routine.model
         dataset = model_training_routine.dataset
         use_dev_set_for_eval = model_training_routine.dataset.dev_df.size > 0
-        eval_set = "dev" if use_dev_set_for_eval else "test"
+        eval_set = "val" if use_dev_set_for_eval else "test"
     else:
         filename = "128_tweet_cnn_model.pth"
         model, dataset = evaluator._get_model_from_file(filename, args)
