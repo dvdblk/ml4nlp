@@ -13,7 +13,6 @@ from torch.utils.data import Dataset, DataLoader
 from argparse import Namespace
 from tqdm import tqdm
 import os
-import nltk
 import time
 import datetime
 import html
@@ -190,6 +189,9 @@ class Vectorizer:
 
 class TweetsDataset(Dataset):
 
+    INPUT_X="x_data"
+    TARGET_Y="y_target"
+
     def __init__(self, dataframes):
         """
         Args : I don't really know yet, this init is not ready as of yet
@@ -197,10 +199,6 @@ class TweetsDataset(Dataset):
         self.train_df = dataframes[0]
         self.dev_df = dataframes[1]
         self.test_df = dataframes[2]
-
-        for i, row in self.train_df.iterrows():
-            if len(row[COL_TWEET]) > 256:
-                print(row)
 
         self._lookup_dict = {'train' : self.train_df,
                              'val': self.dev_df,
@@ -215,20 +213,21 @@ class TweetsDataset(Dataset):
 
 
     @classmethod
-    def load_and_create_dataset(cls, tweets_fp, train_fp, test_fp):
+    def load_and_create_dataset(cls, tweets_fp, train_fp, test_fp,
+        train_dev_frac=1):
         """
         Args: filepath
         """
         tweets = TweetsDataset._get_tweets(tweets_fp)
         train_labels = TweetsDataset._get_train_labels(train_fp)
         test_labels = TweetsDataset._get_test_labels(test_fp)
-        data = TweetsDataset._create_sets(tweets, train_labels, test_labels,
-            use_dev=False
+        data = TweetsDataset._create_sets(
+            tweets, train_labels, test_labels, train_dev_frac
         )
         return cls(data)
 
     @staticmethod
-    def _create_sets(tweets, train_dev_labels, test_labels, use_dev=True):
+    def _create_sets(tweets, train_dev_labels, test_labels, train_dev_frac):
         """Return a tuple of dataframes comprising three main data sets"""
 
         # to allow for merge, need the same type
@@ -236,25 +235,12 @@ class TweetsDataset(Dataset):
 
         # Merge by ID
         train_dev_data = pd.merge(tweets, train_dev_labels, on=COL_ID)
-        test_data = pd.merge(tweets, test_labels, on=COL_ID)
+        test_set = pd.merge(tweets, test_labels, on=COL_ID)
 
-        # Util function
-        def drop_n_shuffle(data):
-            data_no_na = data.dropna().copy()
-            return data_no_na.sample(frac=1)
-
-        frac = 1
-        if use_dev:
-            frac = 0.9
-
-        train_dev_data_prepared = drop_n_shuffle(
-            train_dev_data
-        ).reset_index(drop=True)
-        # take 90% of the data, reshuffle
-        train_set = train_dev_data_prepared.sample(frac=frac, random_state=0)
-        # take 10% that remain
-        dev_set = train_dev_data_prepared.drop(train_set.index)
-        test_set = drop_n_shuffle(test_data)
+        # take (train_dev_frac * 100) % of the traindevdata
+        train_set = train_dev_data.sample(frac=train_dev_frac, random_state=0)
+        # take % that remain
+        dev_set = train_dev_data.drop(train_set.index)
 
         # drop the ID columns, not needed anymore
         train = train_set.drop(COL_ID, axis=1)
@@ -278,7 +264,6 @@ class TweetsDataset(Dataset):
             lang_occurence >= MIN_NR_OCCURENCES
         ).dropna().index.values
         balanced_labels = train_dev_labels.Label.isin(balanced_languages)
-
 
         # Option 1 - replace rows that are labelled with an imbalanced language
         # ~ is element-wise logical not
@@ -333,9 +318,6 @@ class TweetsDataset(Dataset):
 
     def __len__(self):
         return len(self._target_df)
-
-    INPUT_X="x_data"
-    TARGET_Y="y_target"
 
     def __getitem__(self, index):
         """the primary entry point method for PyTorch datasets
@@ -445,6 +427,7 @@ class TrainingRoutine:
             args.tweets_fp,
             args.train_dev_fp,
             args.test_fp
+            data_frac
         )
 
         self.device = args.device
@@ -523,42 +506,51 @@ class TrainingRoutine:
 
     def _train_step(self, batch_size):
         """Do a training iteration over the batch"""
-        # Iterate over training dataset
+        training_bar = tqdm(desc='Batches',
+                          total=len(self.dataset) // batch_size,
+                          position=1,
+                          leave=False)
         # setup: batch generator, set loss to 0, set train mode on
         self.dataset.set_split('train')
         batch_generator = self.dataset.generate_batches(device=self.device,
                                                     batch_size=batch_size)
         running_loss = 0.0
+        running_acc = 0.0
         # make sure our weights / embeddings get updated
         self.model.train()
 
         for batch_index, (batch_X, batch_y) in enumerate(batch_generator):
             # step 1. zero the gradients
             self.optimizer.zero_grad()
-
             # step 2. compute the output
             y_pred = self.model(batch_X)
-
             # step 3. compute the loss
             loss = self.loss_func(y_pred, batch_y)
             loss_t = loss.item()
             running_loss += (loss_t - running_loss) / (batch_index + 1)
-
             # step 4. use loss to produce gradients
             loss.backward()
-
             # step 5. use optimizer to take gradient step
             self.optimizer.step()
 
-        return running_loss
+            acc_t = Evaluator.compute_accuracy(y_pred, batch_y)
+            running_acc += (acc_t - running_acc) / (batch_index + 1)
+
+            training_bar.set_postfix(loss=loss_t, acc=acc_t)
+            training_bar.update()
+
+        return running_loss, running_acc
 
     def train(self, training_args, args):
         """Do the proper training steps"""
         nr_epochs = training_args.get(TrainingRoutine.NR_EPOCHS)
         batch_size = training_args.get(TrainingRoutine.BATCH_SIZE)
+        epoch_bar = tqdm(desc='Epochs',
+                          total=nr_epochs,
+                          position=0)
 
-        for epoch_index in tqdm(range(nr_epochs)):
-            train_loss = self._train_step(batch_size)
+        for epoch_index in range(nr_epochs):
+            train_loss, train_acc = self._train_step(batch_size)
 
             filename = FSUtil.get_model_filename(
                 training_args.get(TrainingRoutine.NR_HIDDEN),
@@ -571,16 +563,43 @@ class TrainingRoutine:
             )
             # Save the model
             torch.save(self.model.state_dict(), filepath)
+            epoch_bar.set_postfix(loss=train_loss, acc=train_acc)
+            epoch_bar.update()
 
+
+
+class Evaluator:
+
+    def evaluate_model(self, model, dataset, split, device):
+        print(" Evaluating ".center(80, "="))
+        dataset.set_split(split)
+        batch_generator = dataset.generate_batches(device=device,
+                                                    batch_size=512)
+
+        model.eval()
+
+        accuracy = 0
+
+        for batch_index, (batch_X, batch_y) in tqdm(enumerate(batch_generator)):
+            y_pred =  model(x_in=batch_X)
+            acc_t = Evaluator.compute_accuracy(y_pred, batch_y)
+            accuracy += (acc_t - accuracy) / (batch_index + 1)
+
+        print("Accuracy: {}".format(accuracy))
+
+
+    @staticmethod
+    def compute_accuracy(y_pred, y_target):
+        _, y_pred_indices = y_pred.max(dim=1)
+        print(y_pred)
+        n_correct = torch.eq(y_pred_indices, y_target).sum().item()
+        return n_correct / len(y_pred_indices) * 100
 
 
 def setup(args):
     """Runtime/Env setup"""
     # create the models directory for saving
     FSUtil.create_dir_if_needed(args.model_state_dir)
-
-    # NLTK
-    #nltk.download('punkt')
 
     # Check CUDA
     if not torch.cuda.is_available():
@@ -608,19 +627,28 @@ def get_args():
         cuda=True
     )
 
+def main():
+    # Setup
+    args = get_args()
+    setup(args)
 
-def train_cnn(args):
-    """Train the CNN with the best performing parameters"""
+    # Train
     model_training_args = TrainingRoutine.create_default_training_args()
     model_training_routine = TrainingRoutine.start_training_routine(
         args, model_training_args
     )
 
+    # Eval
+    evaluator = Evaluator()
+    use_dev_set_for_eval = model_training_routine.dataset.dev_df.size > 0
+    eval_set = 'dev' if use_dev_set_for_eval else 'test'
 
-def main():
-    args = get_args()
-    setup(args)
-    train_cnn(args)
+    evaluator.evaluate_model(
+        model_training_routine.model,
+        model_training_routine.dataset,
+        eval_set,
+        args.device
+    )
 
 # Entrypoint
 if __name__ == "__main__":
