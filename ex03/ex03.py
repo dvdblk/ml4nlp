@@ -668,7 +668,7 @@ def main():
         # Train
         model_training_args = TrainingRoutine.create_training_args(
             nr_hidden_neurons=128,
-            learning_rate=0.001,
+            learning_rate=0.01,
             data_frac=1,
             nr_epochs=2,
             batch_size=32
