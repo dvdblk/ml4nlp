@@ -650,13 +650,15 @@ def setup(args):
         torch.cuda.manual_seed_all(args.seed)
 
 def get_args():
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    to_dir = lambda fp: os.path.join(script_dir, fp)
     return Namespace(
         # Data and Path information
-        tweets_fp="tweets.json",
-        train_dev_fp="labels-train+dev.tsv",
-        test_fp="labels-test.tsv",
-        model_state_file="tweet_cnn_model.pth",
-        model_state_dir="trained_models/",
+        tweets_fp=to_dir("tweets.json"),
+        train_dev_fp=to_dir("labels-train+dev.tsv"),
+        test_fp=to_dir("labels-test.tsv"),
+        model_state_file=to_dir("tweet_cnn_model.pth"),
+        model_state_dir=to_dir("trained_models/"),
         # Runtime Args
         seed=1337,
         cuda=True
