@@ -365,11 +365,7 @@ class TweetClassifier(nn.Module):
                 nr_hidden, nr_languages):
         super(TweetClassifier, self).__init__()
         # Convolution layer
-        self.conv1 = torch.nn.Conv1d(
-            one_hot_length,
-            nr_filters,
-            kernel_length
-        )
+        self.conv1 = torch.nn.Conv1d(one_hot_length, nr_filters, kernel_length)
         # Pooling
         self.pool = torch.nn.MaxPool1d(input_length-1)
         # Fully Connected layers
@@ -397,11 +393,6 @@ class FSUtil:
     """File system utilities"""
 
     SEPARATOR = "_"
-
-    @staticmethod
-    def create_dir_if_needed(dir):
-        if not os.path.exists(dir):
-            os.makedirs(dir)
 
     @staticmethod
     def get_model_filename(nr_hidden,
@@ -526,11 +517,12 @@ class TrainingRoutine:
             self._train_step()
             val_acc, val_loss = self._val_step()
 
-            filename = FSUtil.get_model_filename(
-                self.nr_hidden_neurons,
-                self.learning_rate,
-                self.nr_epochs,
-                args.model_state_file
+            strings = list(map(str, [
+                self.nr_hidden_neurons, self.nr_filters, self.kernel_length,
+                self.learning_rate, self.nr_epochs
+            ]))
+            filename = "_".join(
+                strings + [args.model_state_file]
             )
             filepath = os.path.join(
                 args.model_state_dir, filename
@@ -561,28 +553,30 @@ class Evaluator:
     def _get_model_from_file(self, filepath, args):
         """Loads the model from a file. Returns the model and the dataset"""
         filename = os.path.basename(filepath)
-        str_hidden, *rest = filename.split("_")
+        s_hidden, s_filters, s_kernel, *rest = filename.split("_")
 
         print("Creating the full dataset. This might take a while...")
         dataset = TweetsDataset.load_and_create_dataset(
             args.tweets_fp,
             args.train_dev_fp,
             args.test_fp,
-            TrainingRoutine.MAX_TWEET_LENGTH,		
+            TrainingRoutine.MAX_TWEET_LENGTH,
         )
         vectorizer = dataset.get_vectorizer()
         vocab_len = len(vectorizer.token_vocab)
         nr_languages = len(vectorizer.label_vocab)
         model = TweetClassifier(
             TrainingRoutine.MAX_TWEET_LENGTH,
-	    350,
-	    2,	
+            int(s_filters),
+            int(s_kernel),
             vocab_len,
-            int(str_hidden),
+            int(s_hidden),
             nr_languages
         )
         # load the weights
-        model.load_state_dict(torch.load(filepath, map_location=torch.device(args.device)))
+        model.load_state_dict(
+            torch.load(filepath, map_location=torch.device(args.device))
+        )
         model = model.to(args.device)
 
         return model, dataset
@@ -616,7 +610,8 @@ class Evaluator:
 def setup(args):
     """Runtime/Env setup"""
     # create a model directory for saving the model
-    FSUtil.create_dir_if_needed(args.model_state_dir)
+    if not os.path.exists(args.model_state_dir):
+        os.makedirs(args.model_state_dir)
 
     # Check CUDA and set device
     if not torch.cuda.is_available():
@@ -651,7 +646,7 @@ def main():
     args = get_args()
     setup(args)
 
-    training = False
+    training = True
     evaluator = Evaluator()
     if training:
         # Train
@@ -663,7 +658,7 @@ def main():
             5,              # nr_epochs
             32,             # batch_size
             0.01,           # learning_rate
-            0.5,            # data_frac
+            1,            # data_frac
             0.9,            # train : dev set ratio
         )
         training_routine.start_training_routine(args)
@@ -671,7 +666,8 @@ def main():
         dataset = training_routine.dataset
     else:
         # Test
-        filename = "128_0.01_5_tweet_cnn_model.pth"
+        # Note: only works with models that are trained on the entire dataset
+        filename = "128_350_2_0.01_5_tweet_cnn_model.pth"
         model, dataset = evaluator._get_model_from_file(filename, args)
 
     evaluator.evaluate_model(
