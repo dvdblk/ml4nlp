@@ -377,7 +377,7 @@ class TweetClassifier(nn.Module):
         #print(x.shape)
         out = x.permute(0, 2, 1)
         #print(out.shape)
-        out = F.relu(self.conv1(out))
+        out = self.conv1(out)
         #print(out.shape)
         out = self.pool(out)
         #print(out.shape)
