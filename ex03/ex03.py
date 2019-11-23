@@ -26,7 +26,6 @@ COL_LABEL = 'Label'
 # minimum number of instances that we require to be present in the training set
 # for a given language to be included in fitting of the model
 MIN_NR_OCCURENCES = 1000
-MAX_TWEET_LENGTH = 256
 
 # unknown class name
 CLASS_UNK = '<UNK>'
@@ -140,7 +139,7 @@ class Vectorizer:
     """
 
     def __init__(self, token_vocab, label_vocab,
-        max_tweet_length = MAX_TWEET_LENGTH):
+        max_tweet_length):
         """
         Args:
             surname_vocab (Vocabulary): maps characters to integers
@@ -169,7 +168,7 @@ class Vectorizer:
         return result
 
     @classmethod
-    def from_dataframe(cls, tweets_df):
+    def from_dataframe(cls, tweets_df, max_twt_length):
         """Instantiate the vectorizer from the dataset dataframe
 
         Args:
@@ -184,7 +183,7 @@ class Vectorizer:
           tokens_vocab.add_tweet(row.Tweet)
           labels_vocab.add_token(row.Label)
 
-        return cls(tokens_vocab, labels_vocab)
+        return cls(tokens_vocab, labels_vocab, max_twt_length)
 
 
 class TweetsDataset(Dataset):
@@ -192,7 +191,7 @@ class TweetsDataset(Dataset):
     INPUT_X="x_data"
     TARGET_Y="y_target"
 
-    def __init__(self, dataframes):
+    def __init__(self, dataframes, max_twt_length):
         """
         Args : I don't really know yet, this init is not ready as of yet
         """
@@ -204,7 +203,9 @@ class TweetsDataset(Dataset):
                              'val': self.dev_df,
                              'test': self.test_df}
 
-        self._vectorizer = Vectorizer.from_dataframe(self.train_df)
+        self._vectorizer = Vectorizer.from_dataframe(
+            self.train_df, max_twt_length
+        )
         self.set_split()
 
         # FIXME:
@@ -214,7 +215,7 @@ class TweetsDataset(Dataset):
 
     @classmethod
     def load_and_create_dataset(cls, tweets_fp, train_fp, test_fp,
-        train_dev_frac=1):
+        max_tweet_length, data_frac=1, train_dev_frac=0.9):
         """
         Args: filepath
         """
@@ -222,12 +223,13 @@ class TweetsDataset(Dataset):
         train_labels = TweetsDataset._get_train_labels(train_fp)
         test_labels = TweetsDataset._get_test_labels(test_fp)
         data = TweetsDataset._create_sets(
-            tweets, train_labels, test_labels, train_dev_frac
+            tweets, train_labels, test_labels, data_frac, train_dev_frac,
         )
-        return cls(data)
+        return cls(data, max_tweet_length)
 
     @staticmethod
-    def _create_sets(tweets, train_dev_labels, test_labels, train_dev_frac):
+    def _create_sets(
+        tweets, train_dev_labels, test_labels, data_frac, train_dev_frac):
         """Return a tuple of dataframes comprising three main data sets"""
 
         # to allow for merge, need the same type
@@ -236,6 +238,9 @@ class TweetsDataset(Dataset):
         # Merge by ID
         train_dev_data = pd.merge(tweets, train_dev_labels, on=COL_ID)
         test_set = pd.merge(tweets, test_labels, on=COL_ID)
+        take_part_of_df = lambda df: np.split(df, [int(data_frac*len(df))])
+        train_dev_data, _ = take_part_of_df(train_dev_data)
+        test_set, _ = take_part_of_df(test_set)
 
         # take (train_dev_frac * 100) % of the traindevdata
         train_set = train_dev_data.sample(frac=train_dev_frac, random_state=0)
@@ -356,12 +361,10 @@ class TweetsDataset(Dataset):
 
 class TweetClassifier(nn.Module):
 
-    def __init__(self, input_length, one_hot_length, nr_hidden, nr_languages):
+    def __init__(self, input_length, nr_filters, kernel_length, one_hot_length,
+                nr_hidden, nr_languages):
         super(TweetClassifier, self).__init__()
-        kernel_length = 2
-        nr_filters = 256
-        kernel_size = (kernel_length, one_hot_length) # bi-grams
-        # Convolution
+        # Convolution layer
         self.conv1 = torch.nn.Conv1d(
             one_hot_length,
             nr_filters,
@@ -370,7 +373,6 @@ class TweetClassifier(nn.Module):
         # Pooling
         self.pool = torch.nn.MaxPool1d(input_length-1)
         # Fully Connected layers
-        # FIXME: fc1 input
         self.fc1 = torch.nn.Linear(nr_filters, nr_hidden)
         self.fc2 = torch.nn.Linear(nr_hidden, nr_languages)
 
@@ -413,24 +415,24 @@ class FSUtil:
 
 class TrainingRoutine:
     """Encapsulates the training of a classifier"""
+    MAX_TWEET_LENGTH = 256
 
-    NR_HIDDEN = "nr_hidden_neurons"
-    LEARNING_RATE = "learning_rate"
-    DATA_FRAC = "data_frac"
-    NR_EPOCHS = "nr_epochs"
-    BATCH_SIZE = "batch_size"
-
-    def __init__(self, args, training_args):
-        self.training_args = training_args
-        nr_hidden_neurons = training_args.get(TrainingRoutine.NR_HIDDEN)
-        data_frac = training_args.get(TrainingRoutine.DATA_FRAC)
-        learning_rate = training_args.get(TrainingRoutine.LEARNING_RATE)
+    def __init__(self, args, nr_filters, kernel_length, nr_hidden, nr_epochs,
+                batch_size, learning_rate, data_frac, train_dev_frac):
+        self.nr_hidden_neurons = nr_hidden
+        self.nr_filters = nr_filters,
+        self.kernel_length = kernel_length
+        self.nr_epochs = nr_epochs
+        self.batch_size = batch_size
+        self.learning_rate = learning_rate
 
         self.dataset = TweetsDataset.load_and_create_dataset(
             args.tweets_fp,
             args.train_dev_fp,
             args.test_fp,
-            data_frac
+            TrainingRoutine.MAX_TWEET_LENGTH,
+            data_frac,
+            train_dev_frac
         )
 
         self.device = args.device
@@ -441,73 +443,47 @@ class TrainingRoutine:
         vocab_len = len(vectorizer.token_vocab)
         nr_languages = len(vectorizer.label_vocab)
         model = TweetClassifier(
-            MAX_TWEET_LENGTH,
-            vocab_len,
-            nr_hidden_neurons,
-            nr_languages
+            input_length=TrainingRoutine.MAX_TWEET_LENGTH,
+            nr_filters=nr_filters,
+            kernel_length=kernel_length,
+            one_hot_length=vocab_len,
+            nr_hidden=nr_hidden,
+            nr_languages=nr_languages
         )
         self.model = model.to(args.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
-    @staticmethod
-    def create_training_args(
-        nr_hidden_neurons, learning_rate, data_frac, nr_epochs, batch_size):
-        return {
-            TrainingRoutine.NR_HIDDEN: nr_hidden_neurons,
-            TrainingRoutine.LEARNING_RATE: learning_rate,
-            TrainingRoutine.DATA_FRAC: float(data_frac),
-            TrainingRoutine.NR_EPOCHS: nr_epochs,
-            TrainingRoutine.BATCH_SIZE: batch_size
-        }
-
-    @staticmethod
-    def start_training_routine(args, training_args):
+    def start_training_routine(self, args):
         """Create and train a training routine
 
         Returns:
             training_routine (TrainingRoutine): the trained routine
         """
         start = time.time()
-
-        # Create the routine
-        training_routine = TrainingRoutine(
-            args, training_args
-        )
+        print_time = lambda str: print("[{0:%Y-%m-%d %H:%M:%S}] {1}".format(
+            datetime.datetime.now(), str
+        ))
 
         # Start the training
         print(" Training ".center(80, "="))
-        def print_time(str):
-            print("[{0:%Y-%m-%d %H:%M:%S}] {1}".format(
-                datetime.datetime.now(), str
-            ))
-
-        print_time("Model with: {}".format(
-            json.dumps(training_args, indent=4))
-        )
-
-        training_routine.train(training_args, args)
-
+        self.train(args)
         end = time.time()
-        print()
-        print_time("Training finished in {0:.{1}f} seconds.\n".format(
+        print_time("\nTraining finished in {0:.{1}f} seconds.\n".format(
             end - start, 4
         ))
-        # Return the routine
-        return training_routine
 
 
-    def _train_step(self, batch_size):
+    def _train_step(self):
         """Do a training iteration over the batch"""
-        training_bar = tqdm(desc='Batches',
-                          total=len(self.dataset) // batch_size,
+        training_bar = tqdm(desc='Batch',
+                          total=len(self.dataset) // self.batch_size,
                           position=1,
                           leave=False)
-        # setup: batch generator, set loss to 0, set train mode on
+        # setup: batch generator, set train mode on
         self.dataset.set_split('train')
         batch_generator = self.dataset.generate_batches(device=self.device,
-                                                    batch_size=batch_size)
-        running_loss = 0.0
-        running_acc = 0.0
+                                                    batch_size=self.batch_size)
+
         # make sure our weights / embeddings get updated
         self.model.train()
 
@@ -519,35 +495,41 @@ class TrainingRoutine:
             # step 3. compute the loss
             loss = self.loss_func(y_pred, batch_y)
             loss_t = loss.item()
-            running_loss += (loss_t - running_loss) / (batch_index + 1)
             # step 4. use loss to produce gradients
             loss.backward()
             # step 5. use optimizer to take gradient step
             self.optimizer.step()
 
-            acc_t = Evaluator.compute_accuracy(y_pred, batch_y)
-            running_acc += (acc_t - running_acc) / (batch_index + 1)
+            train_accuracy = Evaluator.compute_accuracy(y_pred, batch_y)
 
-            training_bar.set_postfix(loss=loss_t, acc=acc_t)
+            training_bar.set_postfix(loss=loss_t, acc=train_accuracy)
             training_bar.update()
+        training_bar.close()
 
-        return running_loss, running_acc
+    def _val_step(self):
+        return Evaluator.compute_accuracy_on_dataset(
+            self.model,
+            self.dataset,
+            "val",
+            self.device,
+            256 # batch size
+        )
 
-    def train(self, training_args, args):
+    def train(self, args):
         """Do the proper training steps"""
-        nr_epochs = training_args.get(TrainingRoutine.NR_EPOCHS)
-        batch_size = training_args.get(TrainingRoutine.BATCH_SIZE)
-        epoch_bar = tqdm(desc='Epochs',
-                          total=nr_epochs,
-                          position=0)
+        epoch_bar = tqdm(desc='Epoch',
+                          total=self.nr_epochs,
+                          position=0,
+                          leave=True)
 
-        for epoch_index in range(nr_epochs):
-            train_loss, train_acc = self._train_step(batch_size)
+        for epoch_index in range(self.nr_epochs):
+            self._train_step()
+            val_acc, val_loss = self._val_step()
 
             filename = FSUtil.get_model_filename(
-                training_args.get(TrainingRoutine.NR_HIDDEN),
-                training_args.get(TrainingRoutine.LEARNING_RATE),
-                training_args.get(TrainingRoutine.NR_EPOCHS),
+                self.nr_hidden_neurons,
+                self.learning_rate,
+                self.nr_epochs,
                 args.model_state_file
             )
             filepath = os.path.join(
@@ -555,35 +537,20 @@ class TrainingRoutine:
             )
             # Save the model
             torch.save(self.model.state_dict(), filepath)
-            epoch_bar.set_postfix(loss=train_loss, acc=train_acc)
+            epoch_bar.set_postfix(val_acc=val_acc, val_loss=val_loss)
             epoch_bar.update()
+        epoch_bar.close()
 
 
 
 class Evaluator:
 
-    def evaluate_model(self, model, dataset, split, device):
+    def evaluate_model(self, model, dataset, device):
         print(" Evaluating ".center(80, "="))
-        dataset.set_split(split)
-        batch_size = 512
-        batch_generator = dataset.generate_batches(device=device,
-                                                    batch_size=batch_size)
-
-        model.eval()
-        batch_bar = tqdm(desc='Test batch',
-                          total=len(dataset) // batch_size,
-                          position=0)
-        accuracy = 0
-
-        for batch_index, (batch_X, batch_y) in enumerate(batch_generator):
-            y_pred =  model(x=batch_X)
-            acc_t = Evaluator.compute_accuracy(y_pred, batch_y)
-            accuracy += (acc_t - accuracy) / (batch_index + 1)
-            batch_bar.update()
-
-        batch_bar.close()
-        print("Accuracy: {}".format(accuracy))
-
+        accuracy, loss = Evaluator.compute_accuracy_on_dataset(
+            model, dataset, "test", device, 512
+        )
+        print("Accuracy: {}, Loss: {}".format(accuracy, loss))
 
     def evaluate_model_from_file(self, filepath, dataset, split, device):
         model, dataset = self._get_model_from_file(filepath)
@@ -606,7 +573,6 @@ class Evaluator:
         vocab_len = len(vectorizer.token_vocab)
         nr_languages = len(vectorizer.label_vocab)
         model = TweetClassifier(
-            MAX_TWEET_LENGTH,
             vocab_len,
             int(str_hidden),
             nr_languages
@@ -623,13 +589,32 @@ class Evaluator:
         n_correct = torch.eq(y_pred_indices, y_target).sum().item()
         return n_correct / len(y_pred_indices) * 100
 
+    @staticmethod
+    def compute_accuracy_on_dataset(model, dataset, split, device, batch_size):
+        dataset.set_split(split)
+        batch_generator = dataset.generate_batches(device=device,
+                                                    batch_size=batch_size)
+        loss_func = nn.CrossEntropyLoss()
+        model.eval()
+        accuracy = 0
+        total_loss = 0
+        for batch_index, (batch_X, batch_y) in enumerate(batch_generator):
+            y_pred =  model(x=batch_X)
+            loss = loss_func(y_pred, batch_y)
+            loss_t = loss.item()
+            total_loss += (loss_t - total_loss) / (batch_index + 1)
+            acc_t = Evaluator.compute_accuracy(y_pred, batch_y)
+            accuracy += (acc_t - accuracy) / (batch_index + 1)
+
+        return accuracy, total_loss
+
 
 def setup(args):
     """Runtime/Env setup"""
-    # create the models directory for saving
+    # create a model directory for saving the model
     FSUtil.create_dir_if_needed(args.model_state_dir)
 
-    # Check CUDA
+    # Check CUDA and set device
     if not torch.cuda.is_available():
         args.cuda = False
 
@@ -663,32 +648,31 @@ def main():
     setup(args)
 
     training = True
-    evaluator = Evaluator()
     if training:
         # Train
-        model_training_args = TrainingRoutine.create_training_args(
-            nr_hidden_neurons=128,
-            learning_rate=0.01,
-            data_frac=1,
-            nr_epochs=5,
-            batch_size=32
+        training_routine = TrainingRoutine(
+            args,
+            350,            # nr of filters
+            2,              # kernel length
+            128,            # nr of hidden neurons
+            5,              # nr_epochs
+            32,             # batch_size
+            0.5,            # learning_rate
+            0.05,           # data_frac
+            0.9,            # train : dev set ratio
         )
-        model_training_routine = TrainingRoutine.start_training_routine(
-            args, model_training_args
-        )
-        model = model_training_routine.model
-        dataset = model_training_routine.dataset
-        use_dev_set_for_eval = model_training_routine.dataset.dev_df.size > 0
-        eval_set = "val" if use_dev_set_for_eval else "test"
+        training_routine.start_training_routine(args)
+        model = training_routine.model
+        dataset = training_routine.dataset
     else:
+        # Test
         filename = "128_tweet_cnn_model.pth"
         model, dataset = evaluator._get_model_from_file(filename, args)
-        eval_set = "test"
 
+    evaluator = Evaluator()
     evaluator.evaluate_model(
         model,
         dataset,
-        eval_set,
         args.device
     )
 
