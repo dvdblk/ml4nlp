@@ -509,7 +509,8 @@ class TrainingRoutine:
         training_bar = tqdm(desc='Batches',
                           total=len(self.dataset) // batch_size,
                           position=1,
-                          leave=False)
+                          leave=False,
+                          ascii=True)
         # setup: batch generator, set loss to 0, set train mode on
         self.dataset.set_split('train')
         batch_generator = self.dataset.generate_batches(device=self.device,
