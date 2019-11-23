@@ -581,6 +581,7 @@ class Evaluator:
             accuracy += (acc_t - accuracy) / (batch_index + 1)
             batch_bar.update()
 
+        batch_bar.close()
         print("Accuracy: {}".format(accuracy))
 
 
@@ -668,7 +669,7 @@ def main():
         model_training_args = TrainingRoutine.create_training_args(
             nr_hidden_neurons=128,
             learning_rate=0.001,
-            data_frac=0.01,
+            data_frac=1,
             nr_epochs=2,
             batch_size=32
         )
