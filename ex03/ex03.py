@@ -540,7 +540,7 @@ class Evaluator:
     def evaluate_model(self, model, dataset, device):
         print(" Evaluating ".center(80, "="))
         accuracy, loss = Evaluator.compute_accuracy_on_dataset(
-            model, dataset, "test", device, 512
+            model, dataset, "test", device, 128
         )
         print("Accuracy: {}, Loss: {}".format(accuracy, loss))
 
