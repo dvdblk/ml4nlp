@@ -359,7 +359,7 @@ class TweetClassifier(nn.Module):
     def __init__(self, input_length, one_hot_length, nr_hidden, nr_languages):
         super(TweetClassifier, self).__init__()
         kernel_length = 2
-        nr_filters = 32
+        nr_filters = 256
         kernel_size = (kernel_length, one_hot_length) # bi-grams
         # Convolution
         self.conv1 = torch.nn.Conv1d(
@@ -371,14 +371,14 @@ class TweetClassifier(nn.Module):
         self.pool = torch.nn.MaxPool1d(input_length-1)
         # Fully Connected layers
         # FIXME: fc1 input
-        self.fc1 = torch.nn.Linear(nr_filters, nr_languages)
-        #self.fc2 = torch.nn.Linear(nr_hidden, nr_languages)
+        self.fc1 = torch.nn.Linear(nr_filters, nr_hidden)
+        self.fc2 = torch.nn.Linear(nr_hidden, nr_languages)
 
     def forward(self, x):
         #print("x (shape: {}): {}".format(x.shape, x))
         out = x.permute(0, 2, 1)
         #print("x permuted (shape: {}): {}".format(out.shape, out))
-        out = self.conv1(out)
+        out = F.relu(self.conv1(out))
         #print("conv1 (shape: {}): {}".format(out.shape, out))
         out = self.pool(out)
         #print("pool (shape: {}): {}".format(out.shape, out))
@@ -386,7 +386,7 @@ class TweetClassifier(nn.Module):
         #print("pool flattened (shape: {}): {}".format(out.shape, out))
         out = F.relu(self.fc1(out))
         #print("fc1 (shape: {}): {}".format(out.shape, out))
-        #out = F.relu(self.fc2(out))
+        out = F.relu(self.fc2(out))
         #print("fc2/output (shape: {}): {}".format(out.shape, out))
         return out
 
@@ -670,7 +670,7 @@ def main():
             nr_hidden_neurons=128,
             learning_rate=0.01,
             data_frac=1,
-            nr_epochs=20,
+            nr_epochs=5,
             batch_size=32
         )
         model_training_routine = TrainingRoutine.start_training_routine(
