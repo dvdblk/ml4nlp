@@ -567,12 +567,16 @@ class Evaluator:
         dataset = TweetsDataset.load_and_create_dataset(
             args.tweets_fp,
             args.train_dev_fp,
-            args.test_fp
+            args.test_fp,
+            TrainingRoutine.MAX_TWEET_LENGTH,		
         )
         vectorizer = dataset.get_vectorizer()
         vocab_len = len(vectorizer.token_vocab)
         nr_languages = len(vectorizer.label_vocab)
         model = TweetClassifier(
+            TrainingRoutine.MAX_TWEET_LENGTH,
+	    350,
+	    2,	
             vocab_len,
             int(str_hidden),
             nr_languages
@@ -647,7 +651,8 @@ def main():
     args = get_args()
     setup(args)
 
-    training = True
+    training = False
+    evaluator = Evaluator()
     if training:
         # Train
         training_routine = TrainingRoutine(
@@ -657,8 +662,8 @@ def main():
             128,            # nr of hidden neurons
             5,              # nr_epochs
             32,             # batch_size
-            0.5,            # learning_rate
-            0.05,           # data_frac
+            0.01,           # learning_rate
+            0.5,            # data_frac
             0.9,            # train : dev set ratio
         )
         training_routine.start_training_routine(args)
@@ -666,10 +671,9 @@ def main():
         dataset = training_routine.dataset
     else:
         # Test
-        filename = "128_tweet_cnn_model.pth"
+        filename = "128_0.01_5_tweet_cnn_model.pth"
         model, dataset = evaluator._get_model_from_file(filename, args)
 
-    evaluator = Evaluator()
     evaluator.evaluate_model(
         model,
         dataset,
