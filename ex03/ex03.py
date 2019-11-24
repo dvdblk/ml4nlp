@@ -656,12 +656,12 @@ def main():
         # Train
         training_routine = TrainingRoutine(
             args,
-            400,            # nr of filters
+            350,            # nr of filters
             2,              # kernel length
-            200,            # nr of hidden neurons
+            128,            # nr of hidden neurons
             5,              # nr_epochs
             32,             # batch_size
-            0.01,           # learning_rate
+            0.0001,          # learning_rate
             1,              # data_frac
             0.9,            # train : dev set ratio
         )
