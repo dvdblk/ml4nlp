@@ -440,11 +440,15 @@ class TrainingRoutine:
             training_routine (TrainingRoutine): the trained routine
         """
         start = time.time()
-        print(" Training ".center(Util.NCOLS, "="))
-        print(Util.print_time_fmt("Started training."))
-        # Create the progress bar
         self.dataset.set_split('train')
         nr_batches = len(self.dataset) // self.batch_size
+        print(" Training ".center(Util.NCOLS, "="))
+        print(Util.print_time_fmt(
+            "Started training {} epochs with {} batches of size {}.".format(
+                self.nr_epochs, nr_batches, self.batch_size
+            )
+        ))
+        # Create the progress bar
         progress_bar = tqdm(desc='', total=self.nr_epochs * nr_batches,
             leave=False, ncols=Util.NCOLS
         )
@@ -467,7 +471,7 @@ class TrainingRoutine:
         self.model.train()
 
         for batch_index, (batch_X, batch_y) in enumerate(batch_generator):
-            bar.set_description_str("E {}/{} | B {}/{}".format(
+            bar.set_description_str("E {} | B {}".format(
                 epoch, self.nr_epochs, batch_index, batches
             ))
             # step 1. zero the gradients
