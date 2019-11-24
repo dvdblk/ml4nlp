@@ -435,7 +435,7 @@ class TrainingRoutine:
         self.model = model.to(args.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         self.scheduler = optim.lr_scheduler.MultiStepLR(
-            self.optimizer, milestones=[1, 3, 5], gamma=0.1
+            self.optimizer, milestones=[5, 10], gamma=0.1
         )
 
     def start_training_routine(self, args):
@@ -687,12 +687,12 @@ def main():
         # Train
         training_routine = TrainingRoutine(
             args,
-            350,            # nr of filters
+            500,            # nr of filters
             2,              # kernel length
-            128,            # nr of hidden neurons
-            6,              # nr_epochs
+            256,            # nr of hidden neurons
+            15,              # nr_epochs
             32,             # batch_size
-            0.001,          # learning_rate
+            0.005,          # learning_rate
             1,              # data_frac
             0.9,            # train : dev set ratio
         )
