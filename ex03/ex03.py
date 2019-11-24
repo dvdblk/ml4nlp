@@ -472,7 +472,7 @@ class TrainingRoutine:
 
         for batch_index, (batch_X, batch_y) in enumerate(batch_generator):
             bar.set_description_str("E {} | B {}".format(
-                epoch, self.nr_epochs, batch_index, batches
+                epoch, batch_index
             ))
             # step 1. zero the gradients
             self.optimizer.zero_grad()
