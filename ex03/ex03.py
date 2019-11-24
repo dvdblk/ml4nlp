@@ -415,7 +415,7 @@ class TrainingRoutine:
     def __init__(self, args, nr_filters, kernel_length, nr_hidden, nr_epochs,
                 batch_size, learning_rate, data_frac, train_dev_frac):
         self.nr_hidden_neurons = nr_hidden
-        self.nr_filters = nr_filters,
+        self.nr_filters = nr_filters
         self.kernel_length = kernel_length
         self.nr_epochs = nr_epochs
         self.batch_size = batch_size
