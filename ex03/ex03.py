@@ -372,6 +372,8 @@ class TweetClassifier(nn.Module):
         self.conv1 = torch.nn.Conv1d(one_hot_length, nr_filters, kernel_length)
         # Pooling
         self.pool = torch.nn.MaxPool1d(input_length-1)
+        # Dropout
+        self.dropout = torch.nn.Dropout(p=0.5)
         # Fully Connected layers
         self.fc1 = torch.nn.Linear(nr_filters, nr_hidden)
         self.fc2 = torch.nn.Linear(nr_hidden, nr_languages)
@@ -386,6 +388,7 @@ class TweetClassifier(nn.Module):
         #print("pool (shape: {}): {}".format(out.shape, out))
         out = torch.flatten(out, 1, 2)
         #print("pool flattened (shape: {}): {}".format(out.shape, out))
+        out = self.dropout(out)
         out = F.relu(self.fc1(out))
         #print("fc1 (shape: {}): {}".format(out.shape, out))
         out = F.relu(self.fc2(out))
