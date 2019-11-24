@@ -431,7 +431,9 @@ class TrainingRoutine:
         )
         self.model = model.to(args.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, 2)
+        self.scheduler = optim.lr_scheduler.MultiStepLR(
+            self.optimizer, milestones=[1, 3, 5], gamma=0.1
+        )
 
     def start_training_routine(self, args):
         """Create and train a training routine
@@ -488,7 +490,9 @@ class TrainingRoutine:
 
             train_accuracy = Evaluator.compute_accuracy(y_pred, batch_y)
 
-            bar.set_postfix(loss=round(loss_t, 3), acc=train_accuracy)
+            bar.set_postfix_str("Acc={0:.2f}, Loss={1:.3f}".format(
+                train_accuracy, loss_t
+            ))
             bar.update()
 
     def _val_step(self):
@@ -506,7 +510,11 @@ class TrainingRoutine:
             # Train step
             self._train_step(progress_bar, epoch_index+1, nr_batches)
             # Validation step
-            progress_bar.display("Epoch {}: Performing validation step...")
+            progress_bar.display(Util.print_time_fmt(
+                "Epoch {}: Performing validation step...".format(
+                    epoch_index+1
+                ))
+            )
             val_acc, val_loss = self._val_step()
 
             # Scheduler updates the learning rate if needed
@@ -540,8 +548,8 @@ class Evaluator:
             model, dataset, "test", device, 128
         )
         print(Util.print_time_fmt(
-            "Test set: {}".format(Util.accuracy_loss_fmt(accuracy, loss)))
-        )
+            "Test set: {}".format(Util.accuracy_loss_fmt(accuracy, loss))
+        ))
 
     def evaluate_model_from_file(self, filepath, dataset, split, device):
         model, dataset = self._get_model_from_file(filepath)
