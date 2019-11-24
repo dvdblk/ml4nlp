@@ -392,22 +392,6 @@ class TweetClassifier(nn.Module):
         #print("fc2/output (shape: {}): {}".format(out.shape, out))
         return out
 
-
-class FSUtil:
-    """File system utilities"""
-
-    SEPARATOR = "_"
-
-    @staticmethod
-    def get_model_filename(nr_hidden,
-        learning_rate, nr_epochs, generic_filename="model.pth"):
-        strings = list(map(str, [
-            nr_hidden, learning_rate, nr_epochs
-        ]))
-        return FSUtil.SEPARATOR.join(
-            strings + [generic_filename]
-        )
-
 class TrainingRoutine:
     """Encapsulates the training of a classifier"""
     MAX_TWEET_LENGTH = 256
@@ -447,6 +431,7 @@ class TrainingRoutine:
         )
         self.model = model.to(args.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, 2)
 
     def start_training_routine(self, args):
         """Create and train a training routine
@@ -455,25 +440,24 @@ class TrainingRoutine:
             training_routine (TrainingRoutine): the trained routine
         """
         start = time.time()
-        print_time = lambda str: print("[{0:%Y-%m-%d %H:%M:%S}] {1}".format(
-            datetime.datetime.now(), str
-        ))
-
+        print(" Training ".center(Util.NCOLS, "="))
+        print(Util.print_time_fmt("Started training."))
+        # Create the progress bar
+        self.dataset.set_split('train')
+        nr_batches = len(self.dataset) // self.batch_size
+        progress_bar = tqdm(desc='', total=self.nr_epochs * nr_batches,
+            leave=False, ncols=Util.NCOLS
+        )
         # Start the training
-        print(" Training ".center(80, "="))
-        self.train(args)
+        self.train(args, nr_batches, progress_bar)
         end = time.time()
-        print_time("\nTraining finished in {0:.{1}f} seconds.\n".format(
-            end - start, 4
+        progress_bar.close()
+        print(Util.print_time_fmt(
+            "Finished training in {0:.{1}f} seconds.".format(end - start, 2)
         ))
 
-
-    def _train_step(self):
+    def _train_step(self, bar, epoch, batches):
         """Do a training iteration over the batch"""
-        training_bar = tqdm(desc='Batch',
-                          total=len(self.dataset) // self.batch_size,
-                          position=1,
-                          leave=False)
         # setup: batch generator, set train mode on
         self.dataset.set_split('train')
         batch_generator = self.dataset.generate_batches(device=self.device,
@@ -483,6 +467,9 @@ class TrainingRoutine:
         self.model.train()
 
         for batch_index, (batch_X, batch_y) in enumerate(batch_generator):
+            bar.set_description_str("E {}/{} | B {}/{}".format(
+                epoch, self.nr_epochs, batch_index, batches
+            ))
             # step 1. zero the gradients
             self.optimizer.zero_grad()
             # step 2. compute the output
@@ -497,9 +484,8 @@ class TrainingRoutine:
 
             train_accuracy = Evaluator.compute_accuracy(y_pred, batch_y)
 
-            training_bar.set_postfix(loss=loss_t, acc=train_accuracy)
-            training_bar.update()
-        training_bar.close()
+            bar.set_postfix(loss=round(loss_t, 3), acc=train_accuracy)
+            bar.update()
 
     def _val_step(self):
         return Evaluator.compute_accuracy_on_dataset(
@@ -510,43 +496,48 @@ class TrainingRoutine:
             256 # batch size
         )
 
-    def train(self, args):
-        """Do the proper training steps"""
-        epoch_bar = tqdm(desc='Epoch',
-                          total=self.nr_epochs,
-                          position=0,
-                          leave=True)
-
+    def train(self, args, nr_batches, progress_bar):
+        """Do the proper training steps and update the progress bar"""
         for epoch_index in range(self.nr_epochs):
-            self._train_step()
+            # Train step
+            self._train_step(progress_bar, epoch_index+1, nr_batches)
+            # Validation step
+            progress_bar.display("Epoch {}: Performing validation step...")
             val_acc, val_loss = self._val_step()
 
+            # Scheduler updates the learning rate if needed
+            self.scheduler.step()
+
+            # Model filename
             strings = list(map(str, [
                 self.nr_hidden_neurons, self.nr_filters, self.kernel_length,
                 self.learning_rate, self.nr_epochs
             ]))
-            filename = "_".join(
-                strings + [args.model_state_file]
-            )
-            filepath = os.path.join(
-                args.model_state_dir, filename
-            )
+            filename = "_".join(strings + [args.model_state_file])
+            filepath = os.path.join(args.model_state_dir, filename)
             # Save the model
             torch.save(self.model.state_dict(), filepath)
-            epoch_bar.set_postfix(val_acc=val_acc, val_loss=val_loss)
-            epoch_bar.update()
-        epoch_bar.close()
+
+            # Update the progress bar
+            progress_bar.write(Util.print_time_fmt(
+                "Epoch {}: {}".format(
+                    epoch_index+1, Util.accuracy_loss_fmt(val_acc, val_loss)
+                )
+            ))
+            progress_bar.refresh()
 
 
 
 class Evaluator:
 
     def evaluate_model(self, model, dataset, device):
-        print(" Evaluating ".center(80, "="))
+        print(" Evaluating ".center(Util.NCOLS, "="))
         accuracy, loss = Evaluator.compute_accuracy_on_dataset(
             model, dataset, "test", device, 128
         )
-        print("Accuracy: {}, Loss: {}".format(accuracy, loss))
+        print(Util.print_time_fmt(
+            "Test set: {}".format(Util.accuracy_loss_fmt(accuracy, loss)))
+        )
 
     def evaluate_model_from_file(self, filepath, dataset, split, device):
         model, dataset = self._get_model_from_file(filepath)
@@ -610,45 +601,70 @@ class Evaluator:
 
         return accuracy, total_loss
 
+class Util:
+    """Utility functions"""
 
-def setup(args):
-    """Runtime/Env setup"""
-    # create a model directory for saving the model
-    if not os.path.exists(args.model_state_dir):
-        os.makedirs(args.model_state_dir)
+    SEPARATOR = "_"
+    NCOLS = 80
 
-    # Check CUDA and set device
-    if not torch.cuda.is_available():
-        args.cuda = False
+    @staticmethod
+    def print_time_fmt(str):
+        return "[{0:%Y-%m-%d %H:%M:%S}] {1}".format(datetime.datetime.now(), str)
 
-    args.device = torch.device("cuda" if args.cuda else "cpu")
-    print("\nUsing CUDA (GPU): {}\n".format(args.cuda))
+    @staticmethod
+    def accuracy_loss_fmt(acc, loss):
+        return "Accuracy {0:.2f}%, Loss {1:.3f}".format(acc, loss)
 
-    # Set seed for reproducibility
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if args.cuda:
-        torch.cuda.manual_seed_all(args.seed)
+    @staticmethod
+    def get_model_filename(nr_hidden,
+        learning_rate, nr_epochs, generic_filename="model.pth"):
+        strings = list(map(str, [
+            nr_hidden, learning_rate, nr_epochs
+        ]))
+        return FSUtil.SEPARATOR.join(
+            strings + [generic_filename]
+        )
 
-def get_args():
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    to_dir = lambda fp: os.path.join(script_dir, fp)
-    return Namespace(
-        # Data and Path information
-        tweets_fp=to_dir("tweets.json"),
-        train_dev_fp=to_dir("labels-train+dev.tsv"),
-        test_fp=to_dir("labels-test.tsv"),
-        model_state_file="tweet_cnn_model.pth",
-        model_state_dir=to_dir("trained_models/"),
-        # Runtime Args
-        seed=1337,
-        cuda=True
-    )
+    @staticmethod
+    def setup(args):
+        """Runtime/Env setup"""
+        # create a model directory for saving the model
+        if not os.path.exists(args.model_state_dir):
+            os.makedirs(args.model_state_dir)
+
+        # Check CUDA and set device
+        if not torch.cuda.is_available():
+            args.cuda = False
+
+        args.device = torch.device("cuda" if args.cuda else "cpu")
+        print("\nUsing CUDA (GPU): {}\n".format(args.cuda))
+
+        # Set seed for reproducibility
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if args.cuda:
+            torch.cuda.manual_seed_all(args.seed)
+
+    @staticmethod
+    def get_args():
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        to_dir = lambda fp: os.path.join(script_dir, fp)
+        return Namespace(
+            # Data and Path information
+            tweets_fp=to_dir("tweets.json"),
+            train_dev_fp=to_dir("labels-train+dev.tsv"),
+            test_fp=to_dir("labels-test.tsv"),
+            model_state_file="tweet_cnn_model.pth",
+            model_state_dir=to_dir("trained_models/"),
+            # Runtime Args
+            seed=1337,
+            cuda=True
+        )
 
 def main():
     # Setup
-    args = get_args()
-    setup(args)
+    args = Util.get_args()
+    Util.setup(args)
 
     training = True
     evaluator = Evaluator()
@@ -659,9 +675,9 @@ def main():
             350,            # nr of filters
             2,              # kernel length
             128,            # nr of hidden neurons
-            5,              # nr_epochs
+            6,              # nr_epochs
             32,             # batch_size
-            0.0001,          # learning_rate
+            0.001,          # learning_rate
             1,              # data_frac
             0.9,            # train : dev set ratio
         )
