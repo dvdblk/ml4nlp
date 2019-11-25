@@ -190,13 +190,14 @@ class TweetsDataset(Dataset):
         und_index = self._vectorizer.label_vocab.lookup_token(
             Vocabulary.UND_TOKEN
         )
-        freq = np.insert(np.ndarray.flatten(freq), und_index, 1e-7)
+        freq = np.insert(
+            np.ndarray.flatten(freq).astype(float), und_index, 1e-7
+        )
         freq = torch.tensor(freq, dtype=torch.float32)
         # Most frequent label
         max_label_freq = float(freq.max().item())
         # Set the class weights
         self.class_weights = torch.mul(torch.reciprocal(freq), max_label_freq)
-        self.class_weights[und_index] = 0           # und tokens weight
         # Prepare for training
         self.set_split()
 
