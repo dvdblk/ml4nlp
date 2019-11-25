@@ -393,6 +393,7 @@ class TrainingRoutine:
         self.nr_epochs = nr_epochs
         self.batch_size = batch_size
         self.learning_rate = learning_rate
+        self.dropout_p = dropout_p
         self.device = args.device
 
         # Model
@@ -434,9 +435,9 @@ class TrainingRoutine:
             )
         ))
         print(Util.print_time_fmt(
-            "Filters {}, Neurons {}, Kernel {}, LR {}".format(
+            "Filters {}, Neurons {}, Kernel {}, LR {}, Dropout {}".format(
                 self.nr_filters, self.nr_hidden_neurons, self.kernel_length,
-                self.learning_rate
+                self.learning_rate, self.dropout_p
             )
         ))
         # Create the progress bar
