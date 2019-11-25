@@ -27,23 +27,17 @@ COL_LABEL = 'Label'
 # for a given language to be included in fitting of the model
 MIN_NR_OCCURENCES = 1000
 
-# unknown class name
-CLASS_UNK = '<UNK>'
-
 class Vocabulary:
-    def __init__(self, add_unk=True):
+    def __init__(self):
         self._token_to_ids = {}
         self._ids_to_token = {}
 
         # Add the unknown token and index
-        if add_unk:
-            self.unk_index = self.add_token(CLASS_UNK)
-        else:
-            self.unk_index = -1
+        self.und_index = self.add_token("und")
 
     def vocabulary_set(self):
         """this function returns a list of unique tokens"""
-        return self._ids_to_token.values()
+        return list(self._ids_to_token.values())
 
     def add_token(self, token):
         """Update mapping dicts based on the token.
@@ -70,13 +64,10 @@ class Vocabulary:
         Returns:
             index (int): the index corresponding to the token
         Notes:
-            `unk_index` needs to be >=0 (having been added into the Vocabulary)
+            `und_index` needs to be >=0 (having been added into the Vocabulary)
               for the UNK functionality
         """
-        if self.unk_index >= 0:
-            return self._token_to_ids.get(token, self.unk_index)
-        else:
-            return self._token_to_ids[token]
+        return self._token_to_ids.get(token, self.und_index)
 
     def lookup_index(self, index):
         """Return the token associated with the index
@@ -132,6 +123,7 @@ class TweetsVocabulary(Vocabulary):
             indices.append(index)
 
         return torch.tensor(indices, dtype=torch.int64)
+
 
 class Vectorizer:
     """ The Vectorizer which coordinates the Vocabularies and creates
@@ -190,8 +182,9 @@ class TweetsDataset(Dataset):
 
     INPUT_X="x_data"
     TARGET_Y="y_target"
+    MAX_TWEET_LENGTH=256
 
-    def __init__(self, dataframes, max_twt_length):
+    def __init__(self, dataframes):
         """
         Args : I don't really know yet, this init is not ready as of yet
         """
@@ -204,18 +197,32 @@ class TweetsDataset(Dataset):
                              'test': self.test_df}
 
         self._vectorizer = Vectorizer.from_dataframe(
-            self.train_df, max_twt_length
+            self.train_df,
+            TweetsDataset.MAX_TWEET_LENGTH
         )
+        nr_languages = len(self._vectorizer.label_vocab)
+
+        def vectorize_df(split, batch_size):
+            self.set_split(split)
+            label_frequencies = torch.zeros((batch_size, nr_languages), dtype=torch.int32)
+            for _, (_, target_y) in enumerate(self.generate_batches(batch_size, "cpu")):
+                label_frequencies += nn.functional.one_hot(
+                    target_y,
+                    num_classes=nr_languages
+                )
+            return label_frequencies.sum(dim=0)
+
+        for split, df in self._lookup_dict.items():
+            label_freq = torch.add(vectorize_df(split, 32), 1e-7)
+            if split == 'train':
+                min_label_freq = float(label_freq.max().item())
+                self.class_weights = torch.mul(torch.reciprocal(label_freq.type(torch.float32)), min_label_freq)
+
         self.set_split()
-
-        # FIXME:
-        #class weight --> needed?
-        #self.class_weights = 1.0 / torch.tensor(frequencies, dtype=torch.float32)
-
 
     @classmethod
     def load_and_create_dataset(cls, tweets_fp, train_fp, test_fp,
-        max_tweet_length, data_frac=1, train_dev_frac=0.9):
+        data_frac=1, train_dev_frac=0.9):
         """
         Args: filepath
         """
@@ -225,7 +232,7 @@ class TweetsDataset(Dataset):
         data = TweetsDataset._create_sets(
             tweets, train_labels, test_labels, data_frac, train_dev_frac,
         )
-        return cls(data, max_tweet_length)
+        return cls(data)
 
     @staticmethod
     def _create_sets(
@@ -274,12 +281,16 @@ class TweetsDataset(Dataset):
         ).dropna().index.values
         balanced_labels = train_dev_labels.Label.isin(balanced_languages)
 
-        # Option 1 - replace rows that are labelled with an imbalanced language
-        # ~ is element-wise logical not
-        #train_dev_labels.loc[~balanced_labels, COL_LABEL] = CLASS_UNK
+        only_keep_balanced_languages = True
+        if only_keep_balanced_languages:
+            # Option 1 - keep the rows that are labelled with a balanced language
+            train_dev_labels = train_dev_labels[balanced_labels]
+        else:
+            # Option 2 - replace rows that are labelled with an imbalanced language
+            # ~ is element-wise logical not
+            train_dev_labels.loc[~balanced_labels, COL_LABEL] = 'und'
 
-        # Option 2 - keep the rows that are labelled with a balanced language
-        train_dev_labels = train_dev_labels[balanced_labels]
+
         return train_dev_labels
 
     @staticmethod
@@ -397,35 +408,25 @@ class TweetClassifier(nn.Module):
 
 class TrainingRoutine:
     """Encapsulates the training of a classifier"""
-    MAX_TWEET_LENGTH = 256
 
-    def __init__(self, args, nr_filters, kernel_length, nr_hidden, nr_epochs,
-                batch_size, learning_rate, data_frac, train_dev_frac):
+    def __init__(self, args, dataset, nr_filters, kernel_length, nr_hidden,
+                nr_epochs, batch_size, learning_rate):
+        self.dataset = dataset
         self.nr_hidden_neurons = nr_hidden
         self.nr_filters = nr_filters
         self.kernel_length = kernel_length
         self.nr_epochs = nr_epochs
         self.batch_size = batch_size
         self.learning_rate = learning_rate
-
-        self.dataset = TweetsDataset.load_and_create_dataset(
-            args.tweets_fp,
-            args.train_dev_fp,
-            args.test_fp,
-            TrainingRoutine.MAX_TWEET_LENGTH,
-            data_frac,
-            train_dev_frac
-        )
-
         self.device = args.device
 
         # Model
-        self.loss_func = nn.CrossEntropyLoss()
         vectorizer = self.dataset.get_vectorizer()
         vocab_len = len(vectorizer.token_vocab)
         nr_languages = len(vectorizer.label_vocab)
+
         model = TweetClassifier(
-            input_length=TrainingRoutine.MAX_TWEET_LENGTH,
+            input_length=dataset.MAX_TWEET_LENGTH,
             nr_filters=nr_filters,
             kernel_length=kernel_length,
             one_hot_length=vocab_len,
@@ -433,6 +434,7 @@ class TrainingRoutine:
             nr_languages=nr_languages
         )
         self.model = model.to(args.device)
+        self.loss_func = nn.CrossEntropyLoss(weight=self.dataset.class_weights)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         self.scheduler = optim.lr_scheduler.MultiStepLR(
             self.optimizer, milestones=[5, 10], gamma=0.1
@@ -451,6 +453,12 @@ class TrainingRoutine:
         print(Util.print_time_fmt(
             "Started training {} epochs with {} batches of size {}.".format(
                 self.nr_epochs, nr_batches, self.batch_size
+            )
+        ))
+        print(Util.print_time_fmt(
+            "Filters {}, Neurons {}, Kernel {}, LR {}".format(
+                self.nr_filters, self.nr_hidden_neurons, self.kernel_length,
+                self.learning_rate
             )
         ))
         # Create the progress bar
@@ -569,14 +577,13 @@ class Evaluator:
         dataset = TweetsDataset.load_and_create_dataset(
             args.tweets_fp,
             args.train_dev_fp,
-            args.test_fp,
-            TrainingRoutine.MAX_TWEET_LENGTH,
+            args.test_fp
         )
         vectorizer = dataset.get_vectorizer()
         vocab_len = len(vectorizer.token_vocab)
         nr_languages = len(vectorizer.label_vocab)
         model = TweetClassifier(
-            TrainingRoutine.MAX_TWEET_LENGTH,
+            TweetsDataset.MAX_TWEET_LENGTH,
             int(s_filters),
             int(s_kernel),
             vocab_len,
@@ -673,7 +680,8 @@ class Util:
             model_state_dir=to_dir("trained_models/"),
             # Runtime Args
             seed=1337,
-            cuda=True
+            cuda=True,
+            training=True
         )
 
 def main():
@@ -681,35 +689,49 @@ def main():
     args = Util.get_args()
     Util.setup(args)
 
-    training = True
     evaluator = Evaluator()
-    if training:
+    dataset = TweetsDataset.load_and_create_dataset(
+        args.tweets_fp,
+        args.train_dev_fp,
+        args.test_fp,
+        1,              # fraction of data to use, used for debugging
+        0.9             # train to dev set ratio
+    )
+    if args.training:
         # Train
-        training_routine = TrainingRoutine(
-            args,
+        routines = []
+        routines.append(TrainingRoutine(args, dataset,
             500,            # nr of filters
             2,              # kernel length
             256,            # nr of hidden neurons
-            15,              # nr_epochs
+            15,             # nr_epochs
             32,             # batch_size
-            0.005,          # learning_rate
-            1,              # data_frac
-            0.9,            # train : dev set ratio
-        )
-        training_routine.start_training_routine(args)
-        model = training_routine.model
-        dataset = training_routine.dataset
+            0.005           # learning_rate
+        ))
+        routines_params = [
+            [350, 2, 150, 15, 32, 0.005],
+            [400, 2, 150, 15, 32, 0.005],
+            [500, 2, 150, 15, 32, 0.005],
+            [400, 2, 100, 15, 32, 0.005]
+        ]
+        for routine_params in routines_params:
+            routines.append(TrainingRoutine(args, dataset, *routine_params))
+
+        for routine in routines:
+            routine.start_training_routine(args)
+            evaluator.evaluate_model(
+                routine.model, routine.dataset, args.device
+            )
     else:
         # Test
         # Note: only works with models that are trained on the entire dataset
         filename = "128_350_2_0.01_5_tweet_cnn_model.pth"
         model, dataset = evaluator._get_model_from_file(filename, args)
-
-    evaluator.evaluate_model(
-        model,
-        dataset,
-        args.device
-    )
+        evaluator.evaluate_model(
+            model,
+            dataset,
+            args.device
+        )
 
 # Entrypoint
 if __name__ == "__main__":
