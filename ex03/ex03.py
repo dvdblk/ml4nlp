@@ -152,8 +152,7 @@ class Vectorizer:
         labels_vocab = Vocabulary()
 
         for index, row in tweets_df.iterrows():
-          tokens_vocab.add_tweet(row.Tweet)
-          labels_vocab.add_token(row.Label)
+              tokens_vocab.add_tweet(row.Tweet)
 
         return cls(tokens_vocab, labels_vocab, max_twt_length)
 
@@ -180,8 +179,14 @@ class TweetsDataset(Dataset):
             self.train_df,
             TweetsDataset.MAX_TWEET_LENGTH
         )
+
+        # Add labels in alphabetical order
+        labels_groupped = self.train_df.groupby([COL_LABEL]).agg(["count"])
+        sorted_labels = labels_groupped.index.tolist()
+        for label in sorted_labels:
+            self._vectorizer.label_vocab.add_token(label)
         # Label frequencies
-        freq = self.train_df.groupby([COL_LABEL]).agg(["count"]).values
+        freq = labels_groupped.values
         und_index = self._vectorizer.label_vocab.lookup_token(
             Vocabulary.UND_TOKEN
         )
@@ -192,7 +197,6 @@ class TweetsDataset(Dataset):
         # Set the class weights
         self.class_weights = torch.mul(torch.reciprocal(freq), max_label_freq)
         self.class_weights[und_index] = 0           # und tokens weight
-
         # Prepare for training
         self.set_split()
 
@@ -681,7 +685,7 @@ def main():
         # Train
         routines = []
         routines.append(TrainingRoutine(args, dataset,
-            300,            # nr of filters
+            350,            # nr of filters
             2,              # kernel length
             128,            # nr of hidden neurons
             3,              # nr_epochs
@@ -690,6 +694,7 @@ def main():
             0.5             # dropout
         ))
         routines_params = [
+            [300, 2, 128, 3, 32, 0.001, 0.5],
             [300, 3, 128, 3, 32, 0.001, 0.5],
             [300, 3, 128, 3, 64, 0.001, 0.5],
             [250, 2, 128, 3, 32, 0.001, 0.5],
