@@ -28,25 +28,21 @@ COL_LABEL = 'Label'
 MIN_NR_OCCURENCES = 1000
 
 class Vocabulary:
+    UND_TOKEN="und"
+
     def __init__(self):
         self._token_to_ids = {}
         self._ids_to_token = {}
 
         # Add the unknown token and index
-        self.und_index = self.add_token("und")
+        self.und_index = self.add_token(Vocabulary.UND_TOKEN)
 
     def vocabulary_set(self):
         """this function returns a list of unique tokens"""
         return list(self._ids_to_token.values())
 
     def add_token(self, token):
-        """Update mapping dicts based on the token.
-
-        Args:
-            token (str): the item to add into the Vocabulary
-        Returns:
-            index (int): the integer corresponding to the token
-        """
+        """Update mapping dicts based on the token."""
         if token in self._token_to_ids:
             index = self._token_to_ids[token]
         else:
@@ -57,28 +53,12 @@ class Vocabulary:
 
     def lookup_token(self, token):
         """Retrieve the index associated with the token
-          or the UNK index if token isn't present.
-
-        Args:
-            token (str): the token to look up
-        Returns:
-            index (int): the index corresponding to the token
-        Notes:
-            `und_index` needs to be >=0 (having been added into the Vocabulary)
-              for the UNK functionality
+          or the 'und' index if token isn't present.
         """
         return self._token_to_ids.get(token, self.und_index)
 
     def lookup_index(self, index):
-        """Return the token associated with the index
-
-        Args:
-            index (int): the index to look up
-        Returns:
-            token (str): the token corresponding to the index
-        Raises:
-            KeyError: if the index is not in the Vocabulary
-        """
+        """Return the token associated with the index"""
         if index not in self._ids_to_token:
             raise KeyError("the index (%d) is not in the Vocabulary" % index)
         return self._ids_to_token[index]
@@ -200,24 +180,20 @@ class TweetsDataset(Dataset):
             self.train_df,
             TweetsDataset.MAX_TWEET_LENGTH
         )
-        nr_languages = len(self._vectorizer.label_vocab)
+        # Label frequencies
+        freq = self.train_df.groupby([COL_LABEL]).agg(["count"]).values
+        und_index = self._vectorizer.label_vocab.lookup_token(
+            Vocabulary.UND_TOKEN
+        )
+        freq = np.insert(np.ndarray.flatten(freq), und_index, 1e-7)
+        freq = torch.tensor(freq, dtype=torch.float32)
+        # Most frequent label
+        max_label_freq = float(freq.max().item())
+        # Set the class weights
+        self.class_weights = torch.mul(torch.reciprocal(freq), max_label_freq)
+        self.class_weights[und_index] = 0           # und tokens weight
 
-        def vectorize_df(split, batch_size):
-            self.set_split(split)
-            label_frequencies = torch.zeros((batch_size, nr_languages), dtype=torch.int32)
-            for _, (_, target_y) in enumerate(self.generate_batches(batch_size, "cpu")):
-                label_frequencies += nn.functional.one_hot(
-                    target_y,
-                    num_classes=nr_languages
-                )
-            return label_frequencies.sum(dim=0)
-
-        for split, df in self._lookup_dict.items():
-            label_freq = torch.add(vectorize_df(split, 32), 1e-7)
-            if split == 'train':
-                min_label_freq = float(label_freq.max().item())
-                self.class_weights = torch.mul(torch.reciprocal(label_freq.type(torch.float32)), min_label_freq)
-
+        # Prepare for training
         self.set_split()
 
     @classmethod
@@ -258,7 +234,6 @@ class TweetsDataset(Dataset):
         train = train_set.drop(COL_ID, axis=1)
         dev = dev_set.drop(COL_ID, axis=1)
         test = test_set.drop(COL_ID, axis=1)
-
         return train, dev, test
 
     @staticmethod
@@ -289,8 +264,6 @@ class TweetsDataset(Dataset):
             # Option 2 - replace rows that are labelled with an imbalanced language
             # ~ is element-wise logical not
             train_dev_labels.loc[~balanced_labels, COL_LABEL] = 'und'
-
-
         return train_dev_labels
 
     @staticmethod
@@ -555,7 +528,6 @@ class TrainingRoutine:
             progress_bar.refresh()
 
 
-
 class Evaluator:
 
     def evaluate_model(self, model, dataset, device):
@@ -695,7 +667,7 @@ def main():
     args = Util.get_args()
     Util.setup(args)
 
-    evaluator = Evaluator()
+    # Create the dataset
     dataset = TweetsDataset.load_and_create_dataset(
         args.tweets_fp,
         args.train_dev_fp,
@@ -703,27 +675,34 @@ def main():
         1,              # fraction of data to use, used for debugging
         0.9                 # train to dev set ratio
     )
+    # Train || Test
     if args.training:
         # Train
         routines = []
         routines.append(TrainingRoutine(args, dataset,
-            500,            # nr of filters
+            300,            # nr of filters
             2,              # kernel length
-            256,            # nr of hidden neurons
-            5,              # nr_epochs
+            128,            # nr of hidden neurons
+            3,              # nr_epochs
             32,             # batch_size
-            0.005,          # learning_rate
+            0.001,          # learning_rate
             0.5             # dropout
         ))
         routines_params = [
-            [500, 2, 256, 5, 64, 0.005, 0.5],
-            [500, 3, 256, 5, 32, 0.005, 0.5],
-            [500, 3, 256, 5, 64, 0.005, 0.5],
-            [500, 4, 256, 5, 32, 0.005, 0.5]
+            [300, 3, 128, 3, 32, 0.001, 0.5],
+            [300, 3, 128, 3, 64, 0.001, 0.5],
+            [250, 2, 128, 3, 32, 0.001, 0.5],
+            [250, 2, 128, 3, 64, 0.001, 0.5],
+            [350, 4, 128, 3, 32, 0.001, 0.5],
+            [350, 4, 128, 3, 64, 0.001, 0.5],
+            [350, 2, 128, 3, 64, 0.001, 0.6],
+            [350, 2, 128, 3, 64, 0.001, 0.7],
         ]
         for routine_params in routines_params:
             routines.append(TrainingRoutine(args, dataset, *routine_params))
 
+        # Evaluate
+        evaluator = Evaluator()
         for routine in routines:
             routine.start_training_routine(args)
             evaluator.evaluate_model(
@@ -734,7 +713,7 @@ def main():
         # Note: only works with models that are trained on the entire dataset
         filename = "128_350_2_0.01_5_tweet_cnn_model.pth"
         model, dataset = evaluator._get_model_from_file(filename, args)
-        evaluator.evaluate_model(
+        Evaluator().evaluate_model(
             model,
             dataset,
             args.device
