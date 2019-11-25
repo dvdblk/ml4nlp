@@ -377,16 +377,18 @@ class TweetsDataset(Dataset):
 class TweetClassifier(nn.Module):
 
     def __init__(self, input_length, nr_filters, kernel_length, one_hot_length,
-                nr_hidden, nr_languages):
+                nr_hidden, dropout_p, nr_languages):
         super(TweetClassifier, self).__init__()
+        maxpool_kernel_size = min(kernel_length*10, input_length - 1)
         # Convolution layer
         self.conv1 = torch.nn.Conv1d(one_hot_length, nr_filters, kernel_length)
         # Pooling
-        self.pool = torch.nn.MaxPool1d(input_length-1)
+        self.pool = torch.nn.MaxPool1d(maxpool_kernel_size)
         # Dropout
-        self.dropout = torch.nn.Dropout(p=0.5)
+        self.dropout = torch.nn.Dropout(p=dropout_p)
         # Fully Connected layers
-        self.fc1 = torch.nn.Linear(nr_filters, nr_hidden)
+        fc1_in_len = int(input_length/maxpool_kernel_size)*nr_filters
+        self.fc1 = torch.nn.Linear(fc1_in_len, nr_hidden)
         self.fc2 = torch.nn.Linear(nr_hidden, nr_languages)
 
     def forward(self, x):
@@ -410,7 +412,7 @@ class TrainingRoutine:
     """Encapsulates the training of a classifier"""
 
     def __init__(self, args, dataset, nr_filters, kernel_length, nr_hidden,
-                nr_epochs, batch_size, learning_rate):
+                nr_epochs, batch_size, learning_rate, dropout_p):
         self.dataset = dataset
         self.nr_hidden_neurons = nr_hidden
         self.nr_filters = nr_filters
@@ -431,10 +433,13 @@ class TrainingRoutine:
             kernel_length=kernel_length,
             one_hot_length=vocab_len,
             nr_hidden=nr_hidden,
+            dropout_p=dropout_p,
             nr_languages=nr_languages
         )
         self.model = model.to(args.device)
-        self.loss_func = nn.CrossEntropyLoss(weight=self.dataset.class_weights)
+        self.loss_func = nn.CrossEntropyLoss(
+            weight=self.dataset.class_weights.to(self.device)
+        )
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         self.scheduler = optim.lr_scheduler.MultiStepLR(
             self.optimizer, milestones=[5, 10], gamma=0.1
@@ -588,6 +593,7 @@ class Evaluator:
             int(s_kernel),
             vocab_len,
             int(s_hidden),
+            1, # we don't need dropout while testing
             nr_languages
         )
         # load the weights
@@ -695,7 +701,7 @@ def main():
         args.train_dev_fp,
         args.test_fp,
         1,              # fraction of data to use, used for debugging
-        0.9             # train to dev set ratio
+        0.9                 # train to dev set ratio
     )
     if args.training:
         # Train
@@ -704,15 +710,16 @@ def main():
             500,            # nr of filters
             2,              # kernel length
             256,            # nr of hidden neurons
-            15,             # nr_epochs
+            5,              # nr_epochs
             32,             # batch_size
-            0.005           # learning_rate
+            0.005,          # learning_rate
+            0.5             # dropout
         ))
         routines_params = [
-            [350, 2, 150, 15, 32, 0.005],
-            [400, 2, 150, 15, 32, 0.005],
-            [500, 2, 150, 15, 32, 0.005],
-            [400, 2, 100, 15, 32, 0.005]
+            [500, 2, 256, 5, 64, 0.005, 0.5],
+            [500, 3, 256, 5, 32, 0.005, 0.5],
+            [500, 3, 256, 5, 64, 0.005, 0.5],
+            [500, 4, 256, 5, 32, 0.005, 0.5]
         ]
         for routine_params in routines_params:
             routines.append(TrainingRoutine(args, dataset, *routine_params))
