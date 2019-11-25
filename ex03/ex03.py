@@ -226,13 +226,16 @@ class TweetsDataset(Dataset):
         # Merge by ID
         train_dev_data = pd.merge(tweets, train_dev_labels, on=COL_ID)
         test_set = pd.merge(tweets, test_labels, on=COL_ID)
-        take_part_of_df = lambda df: np.split(df, [int(data_frac*len(df))])
-        train_dev_data, _ = take_part_of_df(train_dev_data)
 
         # take (train_dev_frac * 100) % of the traindevdata
         train_set = train_dev_data.sample(frac=train_dev_frac, random_state=0)
         # take % that remain
         dev_set = train_dev_data.drop(train_set.index)
+
+        take_part_of_df = lambda df: np.split(df, [int(data_frac*len(df))])
+        train_set, _ = take_part_of_df(train_set)
+        dev_set, _ = take_part_of_df(dev_set)
+
 
         # drop the ID columns, not needed anymore
         train = train_set.drop(COL_ID, axis=1)
@@ -677,7 +680,7 @@ def main():
         args.tweets_fp,
         args.train_dev_fp,
         args.test_fp,
-        0.1,              # fraction of data to use, used for debugging
+        0.4,              # fraction of data to use, used for debugging
         0.9                 # train to dev set ratio
     )
     # Train || Test
