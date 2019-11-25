@@ -228,7 +228,6 @@ class TweetsDataset(Dataset):
         test_set = pd.merge(tweets, test_labels, on=COL_ID)
         take_part_of_df = lambda df: np.split(df, [int(data_frac*len(df))])
         train_dev_data, _ = take_part_of_df(train_dev_data)
-        test_set, _ = take_part_of_df(test_set)
 
         # take (train_dev_frac * 100) % of the traindevdata
         train_set = train_dev_data.sample(frac=train_dev_frac, random_state=0)
@@ -678,7 +677,7 @@ def main():
         args.tweets_fp,
         args.train_dev_fp,
         args.test_fp,
-        1,              # fraction of data to use, used for debugging
+        0.1,              # fraction of data to use, used for debugging
         0.9                 # train to dev set ratio
     )
     # Train || Test
