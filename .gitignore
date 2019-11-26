@@ -1,6 +1,6 @@
 # pdfs
-*.pdf
-!ex0[1-4]_labreport.pdf
+**/*.pdf
+!**/ex0[1-4]_labreport.pdf
 **/.DS_Store
 **/.idea
 

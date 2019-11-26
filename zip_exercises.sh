@@ -1,21 +1,22 @@
 #!/bin/sh
-# Author: David Bielik
 
 desired_folder_nr=-1
 folder_prefix="ex0"
 
 print_usage() {
-    echo "Zips the required files from each folder into a zip file ready for submission."
+    echo "Zips the required files from each folder into a zip file ready\
+     for submission."
     echo " "
     echo "options:"
-    echo "-n                specify the folder number to be zipped (e.g. -n 1). Range: [1, 4]"
+    echo "-n                specify the folder number to be zipped (e.g. -n 1).\
+     Range: [1, 4]"
 }
 
 zip_folder() {
     d=$1
     target_file_prefix=${d%/}
     target_py_files="$d${target_file_prefix}_"*".py"
-    archive_name="${target_file_prefix}_davidbielik_deborabeuret"
+    archive_name="${target_file_prefix}_submission"
     lab_report="${d}${target_file_prefix}_labreport.pdf"
 
     # check if the lab report pdf exists
@@ -30,7 +31,8 @@ zip_folder() {
         if [ -e $f ]; then
             break
         else
-            echo "warning: ${d}_*.py not found. Skipping ${target_file_prefix}..."
+            echo "warning: ${d}_*.py not found. Skipping ${target_file_prefix}\
+            ..."
             return
         fi
     done
@@ -52,7 +54,8 @@ done
 if ! [ $desired_folder_nr -eq -1 ] ; then
     # folder specified, zip specific
     if ! [[ $desired_folder_nr =~ ^[1-4]$ ]] ; then
-        echo "error: Not a valid number of exercise. Please choose in the range of [1, 4]." >&2; exit 1
+        echo "error: Not a valid number of exercise. Please choose in the range\
+        of [1, 4]." >&2; exit 1
     fi
     target="${folder_prefix}${desired_folder_nr}/"
     zip_folder $target; exit 0;
