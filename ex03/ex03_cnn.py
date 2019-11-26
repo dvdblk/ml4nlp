@@ -9,7 +9,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
 from argparse import Namespace
 from tqdm import tqdm
 import os
@@ -114,9 +113,9 @@ class Vectorizer:
         max_tweet_length):
         """
         Args:
-            surname_vocab (Vocabulary): maps characters to integers
-            nationality_vocab (Vocabulary): maps nationalities to integers
-            max_surname_length (int): the length of the longest surname
+            token_vocab (Vocabulary): maps characters to integers
+            label_vocab (Vocabulary): maps languages to integers
+            max_tweet_length (int): the max length of a tweet (in characters)
         """
         self.token_vocab = token_vocab
         self.label_vocab = label_vocab
@@ -144,7 +143,8 @@ class Vectorizer:
         """Instantiate the vectorizer from the dataset dataframe
 
         Args:
-            surname_df (pandas.DataFrame): the surnames dataset
+            tweets_df (pandas.DataFrame): the tweets dataset
+            max_twt_length (int): the max length of a tweet (in characters)
         Returns:
             an instance of the SurnameVectorizer
         """
@@ -164,9 +164,6 @@ class TweetsDataset(Dataset):
     MAX_TWEET_LENGTH=256
 
     def __init__(self, dataframes):
-        """
-        Args : I don't really know yet, this init is not ready as of yet
-        """
         self.train_df = dataframes[0]
         self.dev_df = dataframes[1]
         self.test_df = dataframes[2]
@@ -204,9 +201,6 @@ class TweetsDataset(Dataset):
     @classmethod
     def load_and_create_dataset(cls, tweets_fp, train_fp, test_fp,
         data_frac=1, train_dev_frac=0.9):
-        """
-        Args: filepath
-        """
         tweets = TweetsDataset._get_tweets(tweets_fp)
         train_labels = TweetsDataset._get_train_labels(train_fp)
         test_labels = TweetsDataset._get_test_labels(test_fp)
@@ -236,7 +230,6 @@ class TweetsDataset(Dataset):
         train_set, _ = take_part_of_df(train_set)
         dev_set, _ = take_part_of_df(dev_set)
 
-
         # drop the ID columns, not needed anymore
         train = train_set.drop(COL_ID, axis=1)
         dev = dev_set.drop(COL_ID, axis=1)
@@ -265,11 +258,11 @@ class TweetsDataset(Dataset):
 
         only_keep_balanced_languages = True
         if only_keep_balanced_languages:
-            # Option 1 - keep the rows that are labelled with a balanced language
+            # Option 1 - keep the rows that have a balanced language label
             train_dev_labels = train_dev_labels[balanced_labels]
         else:
-            # Option 2 - replace rows that are labelled with an imbalanced language
-            # ~ is element-wise logical not
+            # Option 2 - replace rows that are labelled with an
+            # imbalanced language, ~ is element-wise logical not
             train_dev_labels.loc[~balanced_labels, COL_LABEL] = 'und'
         return train_dev_labels
 
@@ -291,12 +284,13 @@ class TweetsDataset(Dataset):
             u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
                                "]+", flags=re.UNICODE)
 
-        with open(filepath, 'r', encoding="utf-8") as tweets_fh:  # Tweets file handle
+        with open(filepath, 'r', encoding="utf-8") as tweets_fh:
             for line in tweets_fh:   # put each line in a list of lines
                 j_content = json.loads(line)
                 #preprocessing steps first!
                 text = j_content[1]
-                text = re.sub('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
+                text = re.sub('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]\
+                |(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
                 text = re.sub('@\S*', '', text)
                 text = html.unescape(text)
                 if text:
@@ -329,7 +323,10 @@ class TweetsDataset(Dataset):
             (x_data) and label (y_target)
         """
         vectorizer = self.get_vectorizer()
+        # Find the appropriate row from the currently selected dataframe
+        # a.k.a (self._target_df)
         row = self._target_df.iloc[index]
+        # And vectorize
         one_hotted_tweet = vectorizer.vectorize(row.Tweet)
         tweet_lang_target_index = vectorizer.label_vocab.lookup_token(row.Label)
         return {TweetsDataset.INPUT_X: one_hotted_tweet,
@@ -348,6 +345,7 @@ class TweetsDataset(Dataset):
             out_data_dict = {}
             for name, tensor in data_dict.items():
                 out_data_dict[name] = tensor.to(device)
+            # yield the batch_X and batch_target_y
             yield (
                 out_data_dict[TweetsDataset.INPUT_X],
                 out_data_dict[TweetsDataset.TARGET_Y]
@@ -372,20 +370,15 @@ class TweetClassifier(nn.Module):
         self.fc2 = torch.nn.Linear(nr_hidden, nr_languages)
 
     def forward(self, x):
-        #print("x (shape: {}): {}".format(x.shape, x))
+        # 2D one hot character encoding to 1D
         out = x.permute(0, 2, 1)
-        #print("x permuted (shape: {}): {}".format(out.shape, out))
         out = F.relu(self.conv1(out))
-        #print("conv1 (shape: {}): {}".format(out.shape, out))
         out = self.pool(out)
-        #print("pool (shape: {}): {}".format(out.shape, out))
+        # Flatten the pool output from 3 dimensions to 2
         out = torch.flatten(out, 1, 2)
-        #print("pool flattened (shape: {}): {}".format(out.shape, out))
         out = self.dropout(out)
         out = F.relu(self.fc1(out))
-        #print("fc1 (shape: {}): {}".format(out.shape, out))
         out = F.relu(self.fc2(out))
-        #print("fc2/output (shape: {}): {}".format(out.shape, out))
         return out
 
 class TrainingRoutine:
@@ -393,6 +386,7 @@ class TrainingRoutine:
 
     def __init__(self, args, dataset, nr_filters, kernel_length, nr_hidden,
                 nr_epochs, batch_size, learning_rate, dropout_p):
+        # Params
         self.dataset = dataset
         self.nr_hidden_neurons = nr_hidden
         self.nr_filters = nr_filters
@@ -418,10 +412,13 @@ class TrainingRoutine:
             nr_languages=nr_languages
         )
         self.model = model.to(args.device)
+        # Loss with class weights
         self.loss_func = nn.CrossEntropyLoss(
             weight=self.dataset.class_weights.to(self.device)
         )
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        # Scheduler that decreases the learning rate after the 5th and 10th
+        # epoch by a factor of gamma
         self.scheduler = optim.lr_scheduler.MultiStepLR(
             self.optimizer, milestones=[5, 10], gamma=0.1
         )
@@ -484,9 +481,10 @@ class TrainingRoutine:
             loss.backward()
             # step 5. use optimizer to take gradient step
             self.optimizer.step()
-
+            # Get the accuracy
             train_accuracy = Evaluator.compute_accuracy(y_pred, batch_y)
 
+            # Progress bar updates
             bar.set_postfix_str("Acc={0:.2f}, Loss={1:.3f}".format(
                 train_accuracy, loss_t
             ))
@@ -592,13 +590,17 @@ class Evaluator:
 
     @staticmethod
     def compute_accuracy_on_dataset(model, dataset, split, device, batch_size):
+        """Compute the accuracy of a given model on a given dataset split."""
+        # Set the appropriate split ('train' || 'val' || 'test')
         dataset.set_split(split)
+        # Create the batch generator
         batch_generator = dataset.generate_batches(device=device,
                                                     batch_size=batch_size)
         loss_func = nn.CrossEntropyLoss()
         model.eval()
         accuracy = 0
         total_loss = 0
+        # Compute loss / accuracy over the entire set
         for batch_index, (batch_X, batch_y) in enumerate(batch_generator):
             y_pred =  model(x=batch_X)
             loss = loss_func(y_pred, batch_y)
@@ -680,47 +682,49 @@ def main():
         args.tweets_fp,
         args.train_dev_fp,
         args.test_fp,
-        0.4,              # fraction of data to use, used for debugging
+        1,                  # fraction of data to use, used for debugging
         0.9                 # train to dev set ratio
     )
     # Train || Test
     if args.training:
         # Train
+        # Each training of a model/classifier is encapsulated by a training
+        # routine. Even though we have tested a lot of different hyperparameter
+        # combinations, these correspond to the ones presented in the lab
+        # report.
         routines = []
         routines.append(TrainingRoutine(args, dataset,
-            350,            # nr of filters
-            2,              # kernel length
+            300,            # nr of filters
+            4,              # kernel length
             128,            # nr of hidden neurons
-            3,              # nr_epochs
+            6,              # nr_epochs
             32,             # batch_size
-            0.001,          # learning_rate
+            0.0001,          # learning_rate
             0.5             # dropout
         ))
         routines_params = [
-            [300, 2, 128, 3, 32, 0.001, 0.5],
-            [300, 3, 128, 3, 32, 0.001, 0.5],
-            [300, 3, 128, 3, 64, 0.001, 0.5],
-            [250, 2, 128, 3, 32, 0.001, 0.5],
-            [250, 2, 128, 3, 64, 0.001, 0.5],
-            [350, 4, 128, 3, 32, 0.001, 0.5],
-            [350, 4, 128, 3, 64, 0.001, 0.5],
-            [350, 2, 128, 3, 64, 0.001, 0.6],
-            [350, 2, 128, 3, 64, 0.001, 0.7],
+            [500, 2, 256, 15, 32, 0.005, 0.5],
+            [300, 3, 128, 3, 32, 0.0001, 0.5],
+            [300, 3, 350, 3, 32, 0.0001, 0.5],
+            [300, 2, 128, 3, 32, 0.0001, 0.5],
+            [300, 3, 128, 3, 32, 0.0001, 0.7],
         ]
         for routine_params in routines_params:
+            # create a routine for each param list
             routines.append(TrainingRoutine(args, dataset, *routine_params))
 
-        # Evaluate
         evaluator = Evaluator()
         for routine in routines:
+            # Train
             routine.start_training_routine(args)
+            # Evaluate on the test set
             evaluator.evaluate_model(
                 routine.model, routine.dataset, args.device
             )
     else:
         # Test
         # Note: only works with models that are trained on the entire dataset
-        filename = "128_350_2_0.01_5_tweet_cnn_model.pth"
+        filename = "" # specify the model.pth to evaluate
         model, dataset = evaluator._get_model_from_file(filename, args)
         Evaluator().evaluate_model(
             model,
