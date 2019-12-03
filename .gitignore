@@ -24,4 +24,3 @@ ipython_config.py
 # Exercise specific
 
 ex02/models/*
-ex04/*.vocab
