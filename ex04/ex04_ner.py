@@ -1,9 +1,6 @@
 import torch
 import pandas as pd
 
-COL_TOKENS="Tokens"
-COL_LABELS="BIO tags"
-
 def _read_csv(filepath):
     tokens = []
     bio_tags = []
@@ -18,13 +15,9 @@ def _read_csv(filepath):
             # Split the line into the values
             if line[0] != "#":
                 # Accumulation case, i.e. not a '#' line
-                # FIXME: just one single row of all 3 datasets has 4 '\t' chars
-                # instead of 3............ nicedatasetbro
-                try:
-                    n_token, token, bio_outer, bio_embed = tuple(line.split('\t'))
-                except ValueError:
-                    print(filepath, list(line))
-                # ENDFIXME
+                # *_ is used to catch an edge case where the line has 
+                # more than 3 '\t' characters...
+                _, token, bio_outer, bio_embed, *_ = tuple(line.split('\t'))
                 sentence_tokens.append(token)
                 sentence_bio_tags.append((bio_outer, bio_embed))
             elif    sentence_tokens and sentence_bio_tags:
@@ -36,8 +29,8 @@ def _read_csv(filepath):
                 sentence_tokens, sentence_bio_tags = [], []
     # Create the dataframe
     return pd.concat([
-        pd.Series(tokens, name=COL_TOKENS),
-        pd.Series(bio_tags, name=COL_LABELS)
+        pd.Series(tokens, name="Tokens"),
+        pd.Series(bio_tags, name="BIO tags")
     ], axis=1)
 
 
@@ -45,3 +38,5 @@ def _read_csv(filepath):
 train = _read_csv("data/NER-de-train.tsv")
 dev = _read_csv("data/NER-de-dev.tsv")
 test = _read_csv("data/NER-de-test.tsv")
+
+
