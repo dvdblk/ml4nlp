@@ -81,9 +81,10 @@ class NERDataset(Dataset):
 
     @classmethod
     def load_and_create_dataset(cls, train_fp, dev_fp, test_fp, vocab,
-        data_frac=1):
+        data_frac=0.01):
         # Data sets, no preprocessing needed
         train, tag_vocab = NERDataset._read_csv(train_fp)
+        train, _ = np.split(train, [int(data_frac*len(train))])
         dev, _ = NERDataset._read_csv(dev_fp)
         test, _ = NERDataset._read_csv(test_fp)
         vectorizer = Vectorizer(vocab, tag_vocab)
@@ -285,15 +286,26 @@ class BiLSTM_CRF(nn.Module):
                 next_tag_var = forward_var + trans_score + emit_score
                 # The forward variable for this tag is log-sum-exp of all the
                 # scores.
-                alphas_t.append(log_sum_exp(next_tag_var).view(1))
+                alphas_t.append(self._log_sum_exp(next_tag_var).view(1))
             forward_var = torch.cat(alphas_t).view(1, -1)
         terminal_var = forward_var + self.transitions[self.stop_idx]
-        alpha = log_sum_exp(terminal_var)
+        alpha = self._log_sum_exp(terminal_var)
         return alpha
+
+    def _log_sum_exp(self, vec):
+        max_score = vec[0, self._argmax(vec)]
+        max_score_broadcast = max_score.view(1, -1).expand(1, vec.size()[1])
+        return max_score + \
+            torch.log(torch.sum(torch.exp(vec - max_score_broadcast)))
+
+    def _argmax(self, vec):
+        # return the argmax as a python int
+        _, idx = torch.max(vec, 1)
+        return idx.item()
 
     def _get_lstm_features(self, sentence):
         self.hidden = self.init_hidden()
-        embeds = self.word_embeds(sentence)
+        embeds = self.word_embeds(sentence).view(len(sentence), 1, -1)
         lstm_out, self.hidden = self.lstm(embeds, self.hidden)
         lstm_out = lstm_out.view(len(sentence), self.hidden_dim)
         lstm_feats = self.hidden2tag(lstm_out)
@@ -329,7 +341,7 @@ class BiLSTM_CRF(nn.Module):
                 # We don't include the emission scores here because the max
                 # does not depend on them (we add them in below)
                 next_tag_var = forward_var + self.transitions[next_tag]
-                best_tag_id = argmax(next_tag_var)
+                best_tag_id = self._argmax(next_tag_var)
                 bptrs_t.append(best_tag_id)
                 viterbivars_t.append(next_tag_var[0][best_tag_id].view(1))
             # Now add in the emission scores, and assign forward_var to the set
@@ -339,7 +351,7 @@ class BiLSTM_CRF(nn.Module):
 
         # Transition to STOP_TAG
         terminal_var = forward_var + self.transitions[self.stop_idx]
-        best_tag_id = argmax(terminal_var)
+        best_tag_id = self._argmax(terminal_var)
         path_score = terminal_var[0][best_tag_id]
 
         # Follow the back pointers to decode the best path.
@@ -361,13 +373,11 @@ class BiLSTM_CRF(nn.Module):
 
     def forward(self, sentence):  # dont confuse this with _forward_alg above.
         # Get the emission scores from the BiLSTM
-        print(sentence.shape)
         lstm_feats = self._get_lstm_features(sentence)
-        print(lstm_feats.shape)
+
         # Find the best path, given the features.
         score, tag_seq = self._viterbi_decode(lstm_feats)
-        print(tag_seq.shape, tag_seq)
-        return tag_seq
+        return score, tag_seq
 
 
 # Create token vocab / embeddings
@@ -384,7 +394,7 @@ def load_embedding_and_create_vocab(filepath):
 class TrainingRoutine:
     """Encapsulates the training"""
 
-    def __init__(self, model_cls, args, dataset, embeddings_array, lstm_hidden_dim,
+    def __init__(self, args, dataset, embeddings_array, lstm_hidden_dim,
                 nr_epochs, batch_size, learning_rate):
         # Params
         self.dataset = dataset
@@ -396,32 +406,30 @@ class TrainingRoutine:
 
         # Model
         vectorizer = self.dataset.get_vectorizer()
-        n_tags = len(vectorizer.label_vocab)
         padding_idx = vectorizer.token_vocab.lookup_token(Vocabulary.PAD_TOKEN)
         embedding = nn.Embedding.from_pretrained(
             embeddings_array.float(), 
             padding_idx=padding_idx
         )
-        if model_cls is BiLSTM_CRF:
-            start_idx = vectorizer.label_vocab.add_token("<START>")
-            stop_idx = vectorizer.label_vocab.add_token("<STOP>")
-            n_tags = len(vectorizer.label_vocab)
-            model = BiLSTM_CRF(embedding, n_tags, lstm_hidden_dim, start_idx, stop_idx)
-        elif model_cls is RNN:
-            model = RNN(embedding, n_tags, lstm_hidden_dim)
+        model = self.model_init(vectorizer.label_vocab, embedding)
         self.model = model.to(args.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
-    def start_training_routine(self, args):
+    def model_init(self, label_vocab, embedding):
+        """Should be implemented by subclasses to instantiate the model class"""
+        raise NotImplementedError("Model initialization not implemetened.")
+
+    def start_self(self, args):
         """Create and train a training routine
 
         Returns:
-            training_routine (TrainingRoutine): the trained routine
+            self (TrainingRoutine): the trained routine
         """
         start = time.time()
         self.dataset.set_split('train')
         nr_batches = len(self.dataset) // self.batch_size
-        print(" Training {} ".format(Util.get_model_filename(self.model)).center(Util.NCOLS, "="))
+        model_name = Util.get_model_name(self.model)
+        print(" Training {} ".format(model_name).center(Util.NCOLS, "="))
         print(Util.print_time_fmt(
             "Started training {} epochs with {} batches of size {}.".format(
                 self.nr_epochs, nr_batches, self.batch_size
@@ -443,6 +451,67 @@ class TrainingRoutine:
         print(Util.print_time_fmt(
             "Finished training in {0:.{1}f} seconds.".format(end - start, 2)
         ))
+
+    def _train_step(self, bar, epoch, batches):
+        """Do a training iteration over the batch"""
+        raise NotImplementedError("Train step not implemented.")
+
+    def _val_step(self):
+        raise NotImplementedError("Validation step not implemented.")
+
+    def train(self, args, nr_batches, progress_bar):
+        """Do the proper training steps and update the progress bar"""
+        for epoch_index in range(self.nr_epochs):
+            # Train step
+            self._train_step(progress_bar, epoch_index+1, nr_batches)
+            # Validation step
+            progress_bar.display(Util.print_time_fmt(
+                "Epoch {}: Performing validation step...".format(
+                    epoch_index+1
+                ))
+            )
+            val_acc, val_loss = self._val_step()
+
+            # Model filename
+            strings = list(map(str, [
+                self.lstm_hidden_dim, self.learning_rate, self.nr_epochs
+            ]))
+            filename = "_".join(strings + [Util.get_model_name(self.model) + ".pth"])
+            filepath = os.path.join(args.model_state_dir, filename)
+            # Save the model
+            torch.save(self.model.state_dict(), filepath)
+
+            # Update the progress bar
+            progress_bar.write(Util.print_time_fmt(
+                "Epoch {}: {}".format(
+                    epoch_index+1, Util.accuracy_loss_fmt(val_acc, val_loss)
+                )
+            ))
+            progress_bar.refresh()
+
+class RNNTrainingRoutine(TrainingRoutine):
+
+    def model_init(self, label_vocab, embedding):
+        n_tags = len(label_vocab)
+        return RNN(embedding, n_tags, self.lstm_hidden_dim)
+
+    def accuracy(self, outputs, labels):
+        # reshape labels to give a flat vector of length batch_size*seq_len
+        labels = labels.view(-1)
+        # since PADding tokens have label -1, we can generate a mask to exclude the loss from those terms
+        mask = (labels >= 0)
+        # np.argmax gives us the class predicted for each token by the model
+        outputs = torch.argmax(outputs, axis=1)
+        # compare outputs with labels and divide by number of tokens (excluding PADding tokens)
+        result = torch.sum(outputs == labels)/torch.sum(mask).float()
+        return result
+
+    def loss_fn(self, y_pred, y_true):
+        y_true = y_true.view(-1)
+        mask = (y_true >= 0).float()
+        y_true = y_true % y_pred.shape[1]
+        n_tokens = int(torch.sum(mask))
+        return -torch.sum(y_pred[range(y_pred.shape[0]), y_true]*mask)/n_tokens
 
     def _train_step(self, bar, epoch, batches):
         """Do a training iteration over the batch"""
@@ -469,7 +538,6 @@ class TrainingRoutine:
             loss.backward()
             # step 5. use optimizer to take gradient step
             self.optimizer.step()
-
             # Progress bar updates
             bar.set_postfix_str("Loss={0:.3f}".format(loss_t))
             bar.update()
@@ -493,61 +561,105 @@ class TrainingRoutine:
 
         return accuracy, total_loss
 
-    def accuracy(self, outputs, labels):
-        # reshape labels to give a flat vector of length batch_size*seq_len
-        labels = labels.view(-1)
+    def evaluate_test_set(self, args):
+        self.dataset.set_split('test')
+        # Create the batch generator
+        batch_generator = self.dataset.generate_batches(device=args.device,
+                                                    batch_size=self.batch_size,
+                                                    shuffle=False)
+        self.model.eval()
+        model_name = Util.get_model_name(self.model)
+        results_file = open(model_name + "_results.txt", mode="w")
+        tag_vocab = self.dataset.get_vectorizer().label_vocab
+        for batch_index, (batch_X, batch_y) in enumerate(batch_generator):
+            y_pred =  self.model(batch_X)
+            y_pred = torch.argmax(y_pred, axis=1)
+            y_pred = y_pred.reshape(batch_y.shape)
+            for i, (y, y_true, token) in enumerate(zip(y_pred, batch_y, batch_X)):
+                n_row = batch_index * self.batch_size + i
+                row = self.dataset._target_df.iloc[n_row]
+                for n_word, (pred_tag, true_tag, word_idx) in enumerate(zip(y, y_true, token)):
+                    if true_tag == -1:
+                        # ignore padding
+                        break
+                    results_file.write("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n".format(
+                        n_word+1, 
+                        row.Tokens[n_word],
+                        tag_vocab.lookup_index(true_tag.item()),
+                        "O",
+                        tag_vocab.lookup_index(pred_tag.item()),
+                        "O"
+                    ))
+        results_file.close()
 
-        # since PADding tokens have label -1, we can generate a mask to exclude the loss from those terms
-        mask = (labels >= 0)
 
-        # np.argmax gives us the class predicted for each token by the model
-        outputs = torch.argmax(outputs, axis=1)
+class CRFTrainingRoutine(TrainingRoutine):
 
-        # compare outputs with labels and divide by number of tokens (excluding PADding tokens)
-        result = torch.sum(outputs == labels)/torch.sum(mask).float()
-        return result
+    def __init__(self, *args):
+        super(CRFTrainingRoutine, self).__init__(*args)
+        self.batch_size = 1
     
-    def loss_fn(self, y_pred, y_true):
+    def model_init(self, label_vocab, embedding):
+        start_idx = label_vocab.add_token("<START>")
+        stop_idx = label_vocab.add_token("<STOP>")
+        n_tags = len(label_vocab)
+        return BiLSTM_CRF(
+            embedding, n_tags, self.lstm_hidden_dim, start_idx, stop_idx
+        )
 
-        y_true = y_true.view(-1)
-
-        mask = (y_true >= 0).float()
-
-        y_true = y_true % y_pred.shape[1]
-
-        n_tokens = int(torch.sum(mask))
-
-        return -torch.sum(y_pred[range(y_pred.shape[0]), y_true]*mask)/n_tokens
-
-    def train(self, args, nr_batches, progress_bar):
-        """Do the proper training steps and update the progress bar"""
-        for epoch_index in range(self.nr_epochs):
-            # Train step
-            self._train_step(progress_bar, epoch_index+1, nr_batches)
-            # Validation step
-            progress_bar.display(Util.print_time_fmt(
-                "Epoch {}: Performing validation step...".format(
-                    epoch_index+1
-                ))
-            )
-            val_acc, val_loss = self._val_step()
-
-            # Model filename
-            strings = list(map(str, [
-                self.lstm_hidden_dim, self.learning_rate, self.nr_epochs
-            ]))
-            filename = "_".join(strings + [Util.get_model_filename(self.model) + ".pth"])
-            filepath = os.path.join(args.model_state_dir, filename)
-            # Save the model
-            torch.save(self.model.state_dict(), filepath)
-
-            # Update the progress bar
-            progress_bar.write(Util.print_time_fmt(
-                "Epoch {}: {}".format(
-                    epoch_index+1, Util.accuracy_loss_fmt(val_acc, val_loss)
-                )
+    def _train_step(self, bar, epoch, batches):
+        self.dataset.set_split('train')
+        self.model.train()
+        for i in range(len(self.dataset)):
+            bar.set_description_str("E {} | B {}".format(
+                epoch, i
             ))
-            progress_bar.refresh()
+            row = self.dataset[i]
+            sentence_in = torch.tensor(row["x_data"], dtype=torch.long).to(self.device)
+            targets = torch.tensor(row["y_target"], dtype=torch.long).to(self.device)
+            # Step 1. Remember that Pytorch accumulates gradients.
+            # We need to clear them out before each instance
+            self.model.zero_grad()
+            # Step 3. Run our forward pass.
+            loss = self.model.neg_log_likelihood(sentence_in, targets)
+
+            # Step 4. Compute the loss, gradients, and update the parameters by
+            # calling optimizer.step()
+            loss.backward()
+            self.optimizer.step()
+
+            # Progress bar updates
+            bar.set_postfix_str("Loss={0:.3f}".format(loss.item()))
+            bar.update()
+
+    def _val_step(self):
+        return 0, 0
+
+    def evaluate_test_set(self, args):
+
+        self.dataset.set_split('test')
+        # Create the batch generator
+        self.model.eval()
+        model_name = Util.get_model_name(self.model)
+        results_file = open(model_name + "_results.txt", mode="w")
+        tag_vocab = self.dataset.get_vectorizer().label_vocab
+        for i in range(len(self.dataset)):
+            row = self.dataset._target_df.iloc[i]
+            row_dict = self.dataset[i]
+            y_true = torch.tensor(row_dict["y_target"], dtype=torch.long).to(self.device)
+            token = torch.tensor(row_dict["x_data"], dtype=torch.long).to(self.device)
+            _, y = self.model(token)
+            for n_word, (pred_tag, true_tag, word_idx) in enumerate(zip(y, y_true, token)):
+                results_file.write("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n".format(
+                    n_word+1, 
+                    row.Tokens[n_word],
+                    tag_vocab.lookup_index(true_tag.item()),
+                    "O",
+                    tag_vocab.lookup_index(pred_tag),
+                    "O"
+                ))
+        results_file.close()
+
 
 
 class Util:
@@ -565,7 +677,7 @@ class Util:
         return "Accuracy {0:.2f}%, Loss {1:.3f}".format(acc*100, loss)
 
     @staticmethod
-    def get_model_filename(model):
+    def get_model_name(model):
         return type(model).__name__.lower()
 
     @staticmethod
@@ -604,25 +716,26 @@ class Util:
             training=True
         )
 
-def eval_loop(args, routine):
+def eval_loop(args, routines):
     """Evaluate the input words on different classifiers"""
-    input_sentence = ""
-    print()
-    while input_sentence != "q":
-        input_sentence = input("Enter sentence to evaluate (q to quit): ")
-        print(" Evaluating sentence ".center(80, "="))
-        print(Util.print_time_fmt("'" + input_sentence + "'"))
-        sentence = input_sentence.rstrip('\n').lower().split(' ')
-        vectorizer = training_routine.dataset.get_vectorizer()
-        sentence_idx = vectorizer.vectorize(sentence)
-        sentence_idx = torch.tensor(sentence_idx[None, :], dtype=torch.long)
-        y_pred =  training_routine.model(sentence_idx)
-        y_pred = torch.argmax(y_pred, axis=1)
-        tags = []
-        for idx in y_pred:
-            tags.append(vectorizer.label_vocab.lookup_index(idx.item()))
-        print(tags)
-        print("\n")
+    for routine in routines:
+        input_sentence = ""
+        print()
+        while input_sentence != "q":
+            input_sentence = input("Enter sentence to evaluate (q to quit): ")
+            print(" Evaluating sentence ".center(80, "="))
+            print(Util.print_time_fmt("'" + input_sentence + "'"))
+            sentence = input_sentence.rstrip('\n').lower().split(' ')
+            vectorizer = routine.dataset.get_vectorizer()
+            sentence_idx = vectorizer.vectorize(sentence)
+            sentence_idx = torch.tensor(sentence_idx[None, :], dtype=torch.long)
+            y_pred =  routine.model(sentence_idx)
+            y_pred = torch.argmax(y_pred, axis=1)
+            tags = []
+            for idx in y_pred:
+                tags.append(vectorizer.label_vocab.lookup_index(idx.item()))
+            print(tags)
+            print("\n")
 
 if __name__ == "__main__":
     # Setup
@@ -651,43 +764,17 @@ if __name__ == "__main__":
         0.01                # learning rate
     ]
     routines = [
-        TrainingRoutine(BiLSTM_CRF, *training_args),
-        TrainingRoutine(RNN, *training_args)
+        CRFTrainingRoutine(*training_args),
+        RNNTrainingRoutine(*training_args)
     ]
 
+    # Train each routine
     for training_routine in routines:
-        training_routine.start_training_routine(args)
+        training_routine.start_self(args)
 
-    # Eval
-    training_routine.dataset.set_split('test')
-    # Create the batch generator
-    batch_generator = dataset.generate_batches(device=args.device,
-                                                batch_size=training_routine.batch_size,
-                                                shuffle=False)
-    training_routine.model.eval()
-    results_file = open("results.txt", mode="w")
-    tag_vocab = training_routine.dataset.get_vectorizer().label_vocab
-    for batch_index, (batch_X, batch_y) in enumerate(batch_generator):
-        y_pred =  training_routine.model(batch_X)
-        loss = training_routine.loss_func(y_pred, batch_y)
-        y_pred = torch.argmax(y_pred, axis=1)
-        y_pred = y_pred.reshape(batch_y.shape)
-        for i, (y, y_true, token) in enumerate(zip(y_pred, batch_y, batch_X)):
-            n_row = batch_index * training_routine.batch_size + i
-            row = training_routine.dataset._target_df.iloc[n_row]
-            for n_word, (pred_tag, true_tag, word_idx) in enumerate(zip(y, y_true, token)):
-                if true_tag == -1:
-                    # ignore padding
-                    break
-                results_file.write("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n".format(
-                    n_word+1, 
-                    row.Tokens[n_word],
-                    tag_vocab.lookup_index(true_tag.item()),
-                    "O",
-                    tag_vocab.lookup_index(pred_tag.item()),
-                    "O"
-                ))
-    results_file.close()
+    # Evaluate them
+    for training_routine in routines:
+        training_routine.evaluate_test_set(args)
 
-    eval_loop(args, training_routine)
+    #eval_loop(args, routines)
 
