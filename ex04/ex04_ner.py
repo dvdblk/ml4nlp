@@ -197,9 +197,8 @@ class NERDataset(Dataset):
 class RNN(nn.Module):
     def __init__(self, embedding, n_tags, hidden_dim):
         super(RNN, self).__init__()
-        self.n_tags = n_tags
         # maps each token to an embedding_dim vector
-        vocab_size, embedding_dim = embeddings.shape
+        vocab_size, embedding_dim = embedding.weight.shape
         self.embedding = embedding
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
         self.fc = nn.Linear(hidden_dim, n_tags)
@@ -225,28 +224,14 @@ class RNN(nn.Module):
 
         # dim: batch_size*batch_max_len x num_tags
         out = nn.functional.log_softmax(out, dim=1)   
-
         return out
-
-    def loss(self, y_pred, y_true):
-        #y_pred = torch.argmax(y_pred, axis=2).float()
-
-        y_true = y_true.view(-1)
-
-        mask = (y_true >= 0).float()
-
-        y_true = y_true % y_pred.shape[1]
-
-        n_tokens = int(torch.sum(mask))
-
-        return -torch.sum(y_pred[range(y_pred.shape[0]), y_true]*mask)/n_tokens
 
 
 class BiLSTM_CRF(nn.Module):
 
     def __init__(self, embeddings, n_tags, hidden_dim, start_idx, stop_idx):
         super(BiLSTM_CRF, self).__init__()
-        self.vocab_size, self.embedding_dim = embeddings.shape
+        self.vocab_size, self.embedding_dim = embeddings.weight.shape
         self.hidden_dim = hidden_dim
         self.start_idx = start_idx
         self.stop_idx = stop_idx
@@ -257,12 +242,12 @@ class BiLSTM_CRF(nn.Module):
                             num_layers=1, bidirectional=True)
 
         # Maps the output of the LSTM into tag space.
-        self.hidden2tag = nn.Linear(hidden_dim, self.tagset_size)
+        self.hidden2tag = nn.Linear(hidden_dim, self.n_tags)
 
         # Matrix of transition parameters.  Entry i,j is the score of
         # transitioning *to* i *from* j.
         self.transitions = nn.Parameter(
-            torch.randn(self.tagset_size, self.tagset_size))
+            torch.randn(self.n_tags, self.n_tags))
 
         # These two statements enforce the constraint that we never transfer
         # to the start tag and we never transfer from the stop tag
@@ -277,7 +262,7 @@ class BiLSTM_CRF(nn.Module):
 
     def _forward_alg(self, feats):
         # Do the forward algorithm to compute the partition function
-        init_alphas = torch.full((1, self.tagset_size), -10000.)
+        init_alphas = torch.full((1, self.n_tags), -10000.)
         # START_TAG has all of the score.
         init_alphas[0][self.start_idx] = 0.
 
@@ -287,11 +272,11 @@ class BiLSTM_CRF(nn.Module):
         # Iterate through the sentence
         for feat in feats:
             alphas_t = []  # The forward tensors at this timestep
-            for next_tag in range(self.tagset_size):
+            for next_tag in range(self.n_tags):
                 # broadcast the emission score: it is the same regardless of
                 # the previous tag
                 emit_score = feat[next_tag].view(
-                    1, -1).expand(1, self.tagset_size)
+                    1, -1).expand(1, self.n_tags)
                 # the ith entry of trans_score is the score of transitioning to
                 # next_tag from i
                 trans_score = self.transitions[next_tag].view(1, -1)
@@ -308,7 +293,7 @@ class BiLSTM_CRF(nn.Module):
 
     def _get_lstm_features(self, sentence):
         self.hidden = self.init_hidden()
-        embeds = self.word_embeds(sentence).view(len(sentence), 1, -1)
+        embeds = self.word_embeds(sentence)
         lstm_out, self.hidden = self.lstm(embeds, self.hidden)
         lstm_out = lstm_out.view(len(sentence), self.hidden_dim)
         lstm_feats = self.hidden2tag(lstm_out)
@@ -328,7 +313,7 @@ class BiLSTM_CRF(nn.Module):
         backpointers = []
 
         # Initialize the viterbi variables in log space
-        init_vvars = torch.full((1, self.tagset_size), -10000.)
+        init_vvars = torch.full((1, self.n_tags), -10000.)
         init_vvars[0][self.start_idx] = 0
 
         # forward_var at step i holds the viterbi variables for step i-1
@@ -337,7 +322,7 @@ class BiLSTM_CRF(nn.Module):
             bptrs_t = []  # holds the backpointers for this step
             viterbivars_t = []  # holds the viterbi variables for this step
 
-            for next_tag in range(self.tagset_size):
+            for next_tag in range(self.n_tags):
                 # next_tag_var[i] holds the viterbi variable for tag i at the
                 # previous step, plus the score of transitioning
                 # from tag i to next_tag.
@@ -376,11 +361,13 @@ class BiLSTM_CRF(nn.Module):
 
     def forward(self, sentence):  # dont confuse this with _forward_alg above.
         # Get the emission scores from the BiLSTM
+        print(sentence.shape)
         lstm_feats = self._get_lstm_features(sentence)
-
+        print(lstm_feats.shape)
         # Find the best path, given the features.
         score, tag_seq = self._viterbi_decode(lstm_feats)
-        return score, tag_seq
+        print(tag_seq.shape, tag_seq)
+        return tag_seq
 
 
 # Create token vocab / embeddings
@@ -397,7 +384,7 @@ def load_embedding_and_create_vocab(filepath):
 class TrainingRoutine:
     """Encapsulates the training"""
 
-    def __init__(self, args, dataset, embeddings_array, lstm_hidden_dim,
+    def __init__(self, model_cls, args, dataset, embeddings_array, lstm_hidden_dim,
                 nr_epochs, batch_size, learning_rate):
         # Params
         self.dataset = dataset
@@ -411,14 +398,18 @@ class TrainingRoutine:
         vectorizer = self.dataset.get_vectorizer()
         n_tags = len(vectorizer.label_vocab)
         padding_idx = vectorizer.token_vocab.lookup_token(Vocabulary.PAD_TOKEN)
-        tag_padding_idx = vectorizer.label_vocab.lookup_token(Vocabulary.PAD_TOKEN)
         embedding = nn.Embedding.from_pretrained(
             embeddings_array.float(), 
             padding_idx=padding_idx
         )
-        model = RNN(embedding, n_tags, lstm_hidden_dim)
+        if model_cls is BiLSTM_CRF:
+            start_idx = vectorizer.label_vocab.add_token("<START>")
+            stop_idx = vectorizer.label_vocab.add_token("<STOP>")
+            n_tags = len(vectorizer.label_vocab)
+            model = BiLSTM_CRF(embedding, n_tags, lstm_hidden_dim, start_idx, stop_idx)
+        elif model_cls is RNN:
+            model = RNN(embedding, n_tags, lstm_hidden_dim)
         self.model = model.to(args.device)
-        self.loss_func = model.loss
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
     def start_training_routine(self, args):
@@ -430,7 +421,7 @@ class TrainingRoutine:
         start = time.time()
         self.dataset.set_split('train')
         nr_batches = len(self.dataset) // self.batch_size
-        print(" Training ".center(Util.NCOLS, "="))
+        print(" Training {} ".format(Util.get_model_filename(self.model)).center(Util.NCOLS, "="))
         print(Util.print_time_fmt(
             "Started training {} epochs with {} batches of size {}.".format(
                 self.nr_epochs, nr_batches, self.batch_size
@@ -472,7 +463,7 @@ class TrainingRoutine:
             # step 2. compute the output
             y_pred = self.model(batch_X)
             # step 3. compute the loss
-            loss = self.loss_func(y_pred, batch_y)
+            loss = self.loss_fn(y_pred, batch_y)
             loss_t = loss.item()
             # step 4. use loss to produce gradients
             loss.backward()
@@ -494,7 +485,7 @@ class TrainingRoutine:
         # Compute loss / accuracy over the entire set
         for batch_index, (batch_X, batch_y) in enumerate(batch_generator):
             y_pred =  self.model(batch_X)
-            loss = self.loss_func(y_pred, batch_y)
+            loss = self.loss_fn(y_pred, batch_y)
             loss_t = loss.item()
             total_loss += (loss_t - total_loss) / (batch_index + 1)
             acc_t = self.accuracy(y_pred, batch_y)
@@ -515,6 +506,18 @@ class TrainingRoutine:
         # compare outputs with labels and divide by number of tokens (excluding PADding tokens)
         result = torch.sum(outputs == labels)/torch.sum(mask).float()
         return result
+    
+    def loss_fn(self, y_pred, y_true):
+
+        y_true = y_true.view(-1)
+
+        mask = (y_true >= 0).float()
+
+        y_true = y_true % y_pred.shape[1]
+
+        n_tokens = int(torch.sum(mask))
+
+        return -torch.sum(y_pred[range(y_pred.shape[0]), y_true]*mask)/n_tokens
 
     def train(self, args, nr_batches, progress_bar):
         """Do the proper training steps and update the progress bar"""
@@ -533,7 +536,7 @@ class TrainingRoutine:
             strings = list(map(str, [
                 self.lstm_hidden_dim, self.learning_rate, self.nr_epochs
             ]))
-            filename = "_".join(strings + [args.model_state_file])
+            filename = "_".join(strings + [Util.get_model_filename(self.model) + ".pth"])
             filepath = os.path.join(args.model_state_dir, filename)
             # Save the model
             torch.save(self.model.state_dict(), filepath)
@@ -562,14 +565,8 @@ class Util:
         return "Accuracy {0:.2f}%, Loss {1:.3f}".format(acc*100, loss)
 
     @staticmethod
-    def get_model_filename(nr_hidden,
-        learning_rate, nr_epochs, generic_filename="model.pth"):
-        strings = list(map(str, [
-            nr_hidden, learning_rate, nr_epochs
-        ]))
-        return FSUtil.SEPARATOR.join(
-            strings + [generic_filename]
-        )
+    def get_model_filename(model):
+        return type(model).__name__.lower()
 
     @staticmethod
     def setup(args):
@@ -600,7 +597,6 @@ class Util:
             train_fp=to_dir("tweets.json"),
             dev_fp=to_dir("labels-train+dev.tsv"),
             test_fp=to_dir("labels-test.tsv"),
-            model_state_file="lstm_model.pth",
             model_state_dir=to_dir("trained_models/"),
             # Runtime Args
             seed=1337,
@@ -633,7 +629,7 @@ if __name__ == "__main__":
     args = Util.get_args()
     Util.setup(args)
 
-    emb, vocab = load_embedding_and_create_vocab("data/5mincount.vocab")
+    emb, vocab = load_embedding_and_create_vocab("data/small.vocab")
 
     embeddings_tensor = torch.tensor(emb, dtype=torch.float64).to(args.device)
 
@@ -645,13 +641,22 @@ if __name__ == "__main__":
     )
 
     # Train
-    training_routine = TrainingRoutine(args, dataset, embeddings_tensor,
-        lstm_hidden_dim=100,
-        nr_epochs=30, 
-        batch_size=64, 
-        learning_rate=0.01
-    )
-    training_routine.start_training_routine(args)
+    training_args = [
+        args, 
+        dataset, 
+        embeddings_tensor,
+        100,                # lstm hidden layer dimensions
+        1,                  # epochs
+        64,                 # batch_size
+        0.01                # learning rate
+    ]
+    routines = [
+        TrainingRoutine(BiLSTM_CRF, *training_args),
+        TrainingRoutine(RNN, *training_args)
+    ]
+
+    for training_routine in routines:
+        training_routine.start_training_routine(args)
 
     # Eval
     training_routine.dataset.set_split('test')
